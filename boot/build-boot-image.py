@@ -30,7 +30,8 @@ from pathlib import Path, PurePosixPath
 
 HERE = Path(__file__).resolve().parent
 PAGE = 4096
-BOOT_CMDLINE = b'loglevel=5'
+# Unisoc phones carry lcd_id/lcd_name and androidboot.* in the stock boot header; keep them and add Linux options.
+DEFAULT_CMDLINE = b'selinux=0 loglevel=5'
 MISC_BC_OFFSET = 0x800
 # persistent init log lives at 48 MiB inside the Linux boot partition (8 MiB); the image must end before it
 PERSIST_LOG_OFFSET = 48 << 20
@@ -104,13 +105,33 @@ def bootloader_control(misc_head):
         x[28:32] = struct.pack('<I', zlib.crc32(bytes(x[:28])))
         return bytes(x)
 
-    # slot_info byte: priority (4 bits) | tries_remaining (3 bits) | successful_boot (1 bit)
-    android_a = with_slots(b'_a\0\0', 0x9f, 0x1e)       # a: prio 15, successful
-    # Unisoc LK treats tries==1 && !successful as an already failed boot, so the one-shot
-    # trial needs tries=2 (LK decrements to 1; a failed boot then rolls back to slot a).
-    linux_b_trial = with_slots(b'_b\0\0', 0x9e, 0x2f)  # Android a, Linux b
-    android_b = with_slots(b'_b\0\0', 0x1e, 0x9f)       # b: prio 15, successful
-    linux_a_trial = with_slots(b'_a\0\0', 0x2f, 0x9e)  # Android b, Linux a
+    # Unisoc LK does NOT use the AOSP layout. Measured on an NX302J (UMS9620) from its own
+    # uboot_log: the stock misc 0x800 block has slot_info 0x9e / 0x9f, and LK prints
+    #   slot 0 priority: 14, tries_remaining: 1, successful_boot: 1
+    #   slot 1 priority: 15, tries_remaining: 1, successful_boot: 1
+    # which decodes as
+    #   successful_boot (bit 7) | tries_remaining (bits 6..4) | priority (bits 3..0)
+    # The AOSP layout (priority << 4 | tries << 1 | successful) decodes 0x9e as
+    # priority 9 / tries 7 / not successful, which LK never reports. LK also ignores
+    # tries_remaining for a slot marked successful and always boots the highest priority.
+    #
+    # So a Linux trial slot must be: priority above Android, successful_boot = 0, and
+    # tries_remaining > 0. LK then boots it, counts the try down, and falls back to the
+    # Android slot once the counter reaches zero - that is the only fallback that works
+    # before our init runs. Never mark a Linux slot successful: LK then stops counting
+    # and a kernel that cannot start leaves the device with no USB and no way back.
+    def slot(priority, successful=1, tries=1):
+        return (successful << 7) | ((tries & 7) << 4) | (priority & 0xf)
+
+    android_ok = slot(15)        # 0x9f - bootable, done booting, priority 15
+    android_alt = slot(14)       # 0x9e - bootable, done booting, priority 14 (stock value)
+    linux_trial = slot(15, 0, 1)  # 0x1f - priority 15, not successful, one try left
+
+    # Android is the slot to fall back to; Linux sits on the other one with one try.
+    android_a = with_slots(b'_a\0\0', android_ok, android_alt)
+    linux_b_trial = with_slots(b'_b\0\0', android_alt, linux_trial)
+    android_b = with_slots(b'_b\0\0', android_alt, android_ok)
+    linux_a_trial = with_slots(b'_a\0\0', linux_trial, android_alt)
     return android_a, linux_b_trial, android_b, linux_a_trial
 
 
@@ -128,13 +149,19 @@ def main():
                     help='modules built for another device of this family (u30air=out/u30air): they go to '
                          'linux-modules/NAME/ with boot/module-order-NAME.txt, and init loads them in place of the '
                          'ones of the same name when it runs on that device')
-    ap.add_argument('--device', choices=['f50', 'v50', 'u30air'],
+    ap.add_argument('--device', choices=['f50', 'v50', 'u30air', 'nx302j'],
                     help='fallback board identity in /etc/mu300-device; the live device tree takes priority')
     ap.add_argument('--root-target', choices=['sd'],
                     help='TF-only device segment: never probe an internal eMMC root when TF fails')
     ap.add_argument('--trial-guard', type=int, metavar='SECONDS',
                     help='for experiments only: reboot SECONDS after switch_root unless /run/stay exists (with a '
                          'one-shot trial, that is back to Android when the kernel boots without USB)')
+    ap.add_argument('--boot-watchdog', type=int, metavar='SECONDS',
+                    help='reboot SECONDS after init starts unless /run/stay exists (default 90); a one-shot trial '
+                         'returns to Android. Written to etc/mu300-boot-watchdog')
+    ap.add_argument('--cmdline',
+                    help='extra kernel command line appended to the stock header command line (default: '
+                         'selinux=0 loglevel=5)')
     ap.add_argument('--init', type=Path, default=HERE / 'init')
     ap.add_argument('--busybox', required=True, type=Path, help='static arm64 busybox')
     ap.add_argument('--logdw', required=True, type=Path, help='tools/logdw build (static arm64)')
@@ -187,6 +214,10 @@ def main():
                 files['linux-modules/' + name] = ((a.modules / name).read_bytes(), stat.S_IFREG | 0o644)
     if a.trial_guard and a.generic_ramdisk:
         ap.error('--trial-guard does not go into a generic ramdisk')
+    if a.boot_watchdog:
+        if a.generic_ramdisk:
+            ap.error('--boot-watchdog does not go into a generic ramdisk')
+        files['etc/mu300-boot-watchdog'] = (b'%d\n' % a.boot_watchdog, stat.S_IFREG | 0o644)
     if a.root_target:
         if a.generic_ramdisk:
             ap.error('--root-target does not go into a generic ramdisk')
@@ -284,7 +315,12 @@ def main():
     hdr = bytearray(base[:PAGE])
     struct.pack_into('<I', hdr, 8, len(kern))
     struct.pack_into('<I', hdr, 12, len(ram))
-    hdr[44:44 + 1536] = BOOT_CMDLINE + b'\0' * (1536 - len(BOOT_CMDLINE))
+    stock_cmdline = base[44:44 + 1536].split(b'\0', 1)[0].strip()
+    extra = a.cmdline.encode() if a.cmdline else DEFAULT_CMDLINE
+    cmdline = (stock_cmdline + b' ' + extra).strip() if stock_cmdline else extra
+    if len(cmdline) > 1536:
+        sys.exit('command line is longer than the boot header field')
+    hdr[44:44 + 1536] = cmdline + b'\0' * (1536 - len(cmdline))
     struct.pack_into('<I', hdr, 1580, 0)  # signature_size
     body = bytes(hdr) + kern + b'\0' * ((-len(kern)) % PAGE) + ram
     body += b'\0' * ((-len(body)) % PAGE)
