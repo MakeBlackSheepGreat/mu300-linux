@@ -1,0 +1,7 @@
+#!/bin/sh
+# Keep this trial boot running: the boot watchdog (etc/mu300-boot-watchdog, 90 s by default)
+# reboots back to Android unless /run/stay exists.
+# Run it over the USB serial console (/dev/ttyGS0) or SSH once you have control.
+mkdir -p /run
+: > /run/stay
+echo "stayed: /run/stay created"
