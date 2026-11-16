@@ -10,15 +10,22 @@
 # it has already removed the old address; no USB re-enumeration is involved.
 # The config is written here rather than reused from the initramfs so this file
 # alone decides the pool and lease time.
+#
+# The address comes from /etc/mu300/lan.conf (LAN_IP=...) via mu300-lan-ip: this
+# hook used to hardcode 192.168.77.1, so changing the LAN address left the early
+# lease on the old subnet and Windows got an address it could not route.
 mu300_early_usb() {
 	[ -e /sys/class/net/usb0 ] || return 0
-	/opt/mu300/bin/busybox ifconfig usb0 192.168.77.1 netmask 255.255.255.0 up
-	cat > /run/udhcpd-usb0.conf <<'EOF'
-start 192.168.77.200
-end 192.168.77.200
+	lan_ip=$(/opt/mu300/bin/mu300-lan-ip 2>/dev/null)
+	case $lan_ip in *.*.*.*) ;; *) lan_ip=192.168.77.1 ;; esac
+	host_ip=${lan_ip%.*}.200
+	/opt/mu300/bin/busybox ifconfig usb0 "$lan_ip" netmask 255.255.255.0 up
+	cat > /run/udhcpd-usb0.conf <<EOF
+start $host_ip
+end $host_ip
 interface usb0
 option subnet 255.255.255.0
-option router 192.168.77.1
+option router $lan_ip
 option lease 3600
 lease_file /run/udhcpd-usb0.leases
 EOF

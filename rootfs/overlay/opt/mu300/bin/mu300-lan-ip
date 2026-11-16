@@ -1,3 +1,15 @@
 #!/bin/sh
 # Shared default for all supported boards; explicit LAN configuration takes precedence.
-echo 192.168.77.1
+# /etc/mu300/lan.conf wins (LAN_IP=...) - mu300_installer and the OpenWrt uci-defaults both
+# ask this script for the address, so a value written there used to be ignored and the device
+# stayed on 192.168.77.1. MU300_ETC points the lookup at another directory for tests.
+CONF=${MU300_ETC:-/etc}/mu300/lan.conf
+if [ -r "$CONF" ]; then
+    . "$CONF"
+fi
+IP=${MU300_LAN_IP:-${LAN_IP:-192.168.77.1}}
+case $IP in
+    *.*.*.*) ;;
+    *) echo "bad LAN_IP '$IP' in $CONF" >&2; IP=192.168.77.1 ;;
+esac
+echo "$IP"

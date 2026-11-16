@@ -17,6 +17,16 @@ desktop_ext4_check() {
     /repair/lib/ld-musl-aarch64.so.1 --library-path /repair/lib:/repair/usr/lib \
         /repair/usr/sbin/e2fsck -fy "$1" > /run/mu300-root-fsck.log 2>&1
     rc=$?
+    # The repair tools are a musl userland that only the desktop images ship in the ramdisk. A phone
+    # image (NX302J and the other Android boards) gets no /repair/ from build-boot-image.py, so the
+    # command above cannot run at all (126/127). Treating that as a failure kept a merely dirty
+    # filesystem - journal not replayed yet, e.g. after a power cut - from ever being mounted, and
+    # the device fell back to Android on every boot. Let the kernel replay the journal instead.
+    case $rc in
+        126|127)
+            log "stage=desktop-root-fsck-skipped rc=$rc (no /repair in this ramdisk; kernel replays the journal)"
+            return 0 ;;
+    esac
     [ "$rc" -le 2 ] || { log "stage=desktop-root-fsck-failed rc=$rc"; return 1; }
     log "stage=desktop-root-fsck-done rc=$rc"
 }
