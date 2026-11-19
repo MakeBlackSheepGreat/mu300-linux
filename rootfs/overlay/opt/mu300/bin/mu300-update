@@ -187,7 +187,7 @@ check() {
 keep_list() {
     case $1 in
         ubuntu) echo "etc/mu300 etc/ssh etc/hostname etc/localtime etc/timezone etc/fstab home root srv usr/local var/lib/bluetooth" ;;
-        openwrt) echo "etc/config etc/mu300 etc/unisoc-modem etc/dropbear etc/rc.local etc/crontabs root" ;;
+        openwrt) echo "etc/config etc/mu300 etc/unisoc-modem etc/unisoc-bluetooth etc/bluetooth etc/dropbear etc/rc.local etc/crontabs root" ;;
     esac
 }
 # vendor files that the published images deliberately do not contain
@@ -585,6 +585,7 @@ apply_one() {  # apply_one OS TAG
             u=${l##*/}
             [ -L "$new/etc/rc.d/$u" ] && continue
             [ -x "$new/etc/init.d/${u#S??}" ] || [ -x "$new/etc/init.d/${u#K??}" ] || continue
+            mkdir -p "$new/etc/rc.d" || return 1
             cp -a "$l" "$new/etc/rc.d/$u" 2>/dev/null || true
         done
     fi

@@ -95,6 +95,8 @@ IWINFO_APKS=${UNISOC_IWINFO_APKS:-$TOP/work/iwinfo-ap-scan}
 sh "$TOP/openwrt/build-iwinfo-ap-scan.sh" "$IWINFO_APKS"
 LPAC_APKS=${UNISOC_LPAC_APKS:-$(python3 "$TOP/openwrt/lpac-state.py" --path)}
 UNISOC_WRT_VER="$VER" sh "$TOP/openwrt/build-lpac.sh" "$LPAC_APKS"
+BT_DECODER=${UNISOC_BLUETOOTH_DECODER:?Register bluetooth_decoder in tools/build-layout.json}
+python3 "$TOP/tools/ble-decoder/build.py" --output "$BT_DECODER" --check
 
 cd "$TOP"
 if [ ! -f "openwrt/$TARBALL" ]; then
@@ -141,6 +143,10 @@ docker run --rm --platform linux/arm64 \
   -v "$TOP/rootfs/overlay/opt/mu300":/in/opt-mu300:ro -v "$TOP/rootfs/overlay/usr/share/ucode/mu300":/in/ucode-mu300:ro -v "$TOP/openwrt/overlay":/in/overlay:ro \
   -v "$TOP/tools/stage-flow-offload.py":/in/stage-flow-offload.py:ro \
   -v "$TOP/tools/stage-ra-renew.py":/in/stage-ra-renew.py:ro \
+  -v "$TOP/tools/stage-ntp.py":/in/stage-ntp.py:ro \
+  -v "$TOP/tools/stage-bluetooth.py":/in/stage-bluetooth.py:ro \
+  -v "$TOP/tools/ble-decoder":/in/ble-decoder-source:ro \
+  -v "$BT_DECODER":/in/ble-decoder-artifacts:ro \
   -v "$TOP/openwrt/patches/wifi-scripts-no-dfs.patch":/in/wifi-scripts-no-dfs.patch:ro \
   -v "$TOP/boot/module-order.txt":/in/module-order.txt:ro -v "$IN/out/modules":/in/modules:ro \
   $(opt out/modules.builtin modules.builtin) $(opt out/modules.builtin.modinfo modules.builtin.modinfo) \
@@ -176,11 +182,13 @@ apk_retry update >/dev/null
 apk_retry add --allow-untrusted /in/wifi-sae/*.apk >/dev/null
 apk_retry add --allow-untrusted /in/iwinfo-ap-scan/*.apk >/dev/null
 # The cipher capability helper needs the section omitted by reduced iw builds.
-apk_retry add iwinfo wireless-regdb iw-full bash ip-full coreutils-stty openssl-util curl ca-bundle msmtp luci-base \
+apk_retry add dnsmasq-full iwinfo wireless-regdb iw-full bash ip-full coreutils-stty openssl-util curl ca-bundle msmtp luci-base \
     luci-i18n-base-zh-cn luci-i18n-firewall-zh-cn luci-i18n-package-manager-zh-cn \
     rpcd-mod-ucode ucode ucode-mod-fs ucode-mod-ubus ucode-mod-uci ucode-mod-uloop ucode-mod-nl80211 ucode-mod-rtnl ucode-mod-socket \
     i2c-tools gpiod-tools flock ttyd luci-app-ttyd luci-i18n-ttyd-zh-cn luci-i18n-ttyd-tr python3 python3-openssl \
-    r8152-firmware >/dev/null
+    r8152-firmware bluez-daemon bluez-utils bluez-utils-extra dbus python3-cryptography python3-zeroconf >/dev/null
+grep -qx 'P:dnsmasq-full' /lib/apk/db/installed
+! grep -qx 'P:dnsmasq' /lib/apk/db/installed
 apk_retry add --allow-untrusted /in/block-mount-mu300.apk >/dev/null
 apk_retry add --allow-untrusted /in/lpac/lpac-2.3.0-r1001.apk >/dev/null
 apk_retry add --allow-untrusted /in/luci-theme-aurora.apk >/dev/null
@@ -327,6 +335,8 @@ if [ -e /in/busybox ]; then
     done
 fi
 mkdir -p $R/etc/mu300
+python3 /in/stage-ntp.py --root $R --overlay /in/overlay
+python3 /in/stage-bluetooth.py --root $R --overlay /in/overlay --platform mu300-pcie --decoder-artifacts /in/ble-decoder-artifacts --decoder-sources /in/ble-decoder-source
 printf "%s\n" "${MU300_VERSION:-dev}" > $R/etc/mu300/image-version
 [ ! -f /in/release.json ] || cp /in/release.json $R/etc/mu300/release.json
 # Record image packages so upgrades can restore only user additions.

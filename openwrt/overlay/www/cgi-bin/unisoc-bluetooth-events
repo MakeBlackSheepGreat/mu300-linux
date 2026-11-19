@@ -1,0 +1,4 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Cached old pages must not hold uhttpd CGI slots.
+printf 'Status: 410 Gone\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\n\r\nRefresh the Bluetooth page to use native event subscriptions.\n'
