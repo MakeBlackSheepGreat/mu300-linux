@@ -50,3 +50,10 @@ upstream/out-*/
 .mcp.json.backup.*
 .codex/config.toml
 .codex/config.toml.backup.*
+
+# AOCI cognition assets (machine-bound index; each checkout regenerates its own)
+.aoci/
+aoci.txt
+aoci.meta.txt
+aoci.code.txt
+AGENTS.md.backup.*
