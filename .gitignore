@@ -44,3 +44,9 @@ tools/ctlset/ctlset
 upstream/out-*/
 # the user's own list of files the self-update leaves alone (tools/self-update.sh, install.ps1)
 .mu300-keep
+
+# AOCI agent host integration (machine-bound; do not commit)
+.mcp.json
+.mcp.json.backup.*
+.codex/config.toml
+.codex/config.toml.backup.*

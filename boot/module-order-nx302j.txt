@@ -61,3 +61,14 @@ usb_f_vser.ko
 slog_bridge.ko
 sbuf_bridge.ko
 sblock_bridge.ko
+unisoc-iommu.ko
+board_state.ko
+lcd_state_notify.ko
+zte_lcdbl_vsp_vsn.ko
+apsys-dvfs.ko
+sprd_mipi.ko
+mipi_driver.ko
+vpu.ko
+ptn38003a-i2c.ko
+sprd-gsp.ko
+sprd-drm.ko
