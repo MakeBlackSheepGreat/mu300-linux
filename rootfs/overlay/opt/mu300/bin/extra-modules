@@ -62,6 +62,15 @@ if [ -f "$M/sprd_pmic_wdt.ko" ] && ! grep -q '^sprd_pmic_wdt ' /proc/modules; th
     insmod "$M/sprd_pmic_wdt.ko" 2>/dev/null && echo "loaded sprd_pmic_wdt" || echo "FAILED sprd_pmic_wdt"
 fi
 
+# The GPU rail is marked status="disabled" in this board DT and the GPU node
+# carries no gpu-supply, so the kernel hands mali_kbase the always-on dummy
+# regulator. ump9620-regulator still exposes the real DCDC_GPU through its own
+# debugfs file (0644), which bypasses the regulator core EPERM; turning it on
+# here is what lets mali_platform_init reach the GPU registers instead of
+# hanging the AXI bus on its first write to top_force_shutdown.
+if [ -w /sys/kernel/debug/DCDC_GPU/enable ]; then
+    echo 1 > /sys/kernel/debug/DCDC_GPU/enable 2>/dev/null
+fi
 for m in sprd_soc_thm thermal-generic-adc sprd_cpu_cooling leds-sc27xx-bltc zte_sar zte_card_holder_det sc27xx-vibra sprd_cp_dvfs sprd_ddr_dvfs sprd_gpu_cooling mali_kbase; do
     if modprobe "$m" 2>/tmp/mu300-modprobe.err; then
         echo "loaded $m"

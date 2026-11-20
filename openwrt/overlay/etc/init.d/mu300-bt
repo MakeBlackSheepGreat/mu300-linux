@@ -1,0 +1,25 @@
+#!/bin/sh /etc/rc.common
+# Bluetooth bring-up: load sprdbt_tty once the WCN chip is fully up, clear both
+# rfkill blocks, and attach an H4 line discipline so hci0 appears.
+#
+# The ordering is the whole difficulty. wcn_bsp creates the sprd-mtty
+# platform_device from marlin_subsys_init() inside marlin_power_wq, and mtty_open()
+# then powers the BT subsystem through start_marlin(), which takes the same
+# power_lock the WCN firmware download holds. So this waits for wlan0 - the signal
+# that the chip has finished initialising - before doing anything.
+#
+# It runs late (S30) and at boot priority 30 so mu300-hw (S12) and mu300-hotspot
+# (S21) have already brought the radio up.
+#
+# No respawn: bt-bringup retries internally, and a procd respawn of a script that
+# takes half a minute would show up as a restart loop in the log.
+START=30
+USE_PROCD=1
+start_service() {
+    procd_open_instance
+    procd_set_param command /opt/mu300/bin/bt-bringup
+    procd_set_param respawn 0 0 0
+    procd_set_param stdout 0
+    procd_set_param stderr 0
+    procd_close_instance
+}

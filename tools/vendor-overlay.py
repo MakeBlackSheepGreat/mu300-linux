@@ -75,7 +75,15 @@ def host_free_mode(arc, is_dir):
     parts = arc.split('/')
     if 'dev-properties' in parts[:-1]:
         return 0o444
-    return 0o755 if parts[-2:-1] == ['bin'] else 0o644
+    # Every directory whose files are run rather than read. 'bin' alone missed
+    # /etc/init.d, so an OpenWrt service installed from the overlay arrived as
+    # 0644 and procd refused it with exit_code 127; android-install.sh then also
+    # skipped its rc.d symlink, because it requires the init script to be
+    # executable. /etc/uci-defaults needs it for the same reason: they run once
+    # at first boot.
+    if parts[-2:-1] == ['bin'] or 'init.d' in parts[:-1] or 'uci-defaults' in parts[:-1]:
+        return 0o755
+    return 0o644
 
 
 def add_tree(tar, src: Path, dest: str, seen: set, rename=None):

@@ -1,21 +1,24 @@
-#!/bin/bash
+#!/bin/sh
+# Stop the trial watchdog before anything else in this script can block: without it the boot
+# watchdog reboots into Android about a minute after init, taking the AP down with it.
+touch /run/stay 2>/dev/null
 # Wi-Fi hotspot on wlan0: hostapd (WPA2) + DHCP/DNS; clients are NATed out through the modem by mobile-data.
 # Settings: /etc/mu300/hotspot.conf (SSID, PSK, CHANNEL, COUNTRY). Imported from Android's SoftAP config by the
 # installer when available; otherwise generated once with a random passphrase.
 # (MU300_HOTSPOT_CONF, MU300_WIFI_CHANNELS, MU300_HOSTAPD_CONF and MU300_HOTSPOT_DRYRUN=1, which stops once the hostapd
 # configuration is written, are for tests/)
-set -euo pipefail
+set -e
 CONF=${MU300_HOTSPOT_CONF:-/etc/mu300/hotspot.conf}
 HOSTAPD_CONF=${MU300_HOSTAPD_CONF:-/run/mu300-hostapd.conf}
 WIFI_CHANNELS=${MU300_WIFI_CHANNELS:-/opt/mu300/lib/wifi-channels.sh}
 [ -r "$WIFI_CHANNELS" ] || WIFI_CHANNELS=$(dirname "$0")/../lib/wifi-channels.sh
 . "$WIFI_CHANNELS"
 if [ ! -s "$CONF" ]; then
-    mac=$(cat /sys/class/net/wlan0/address 2>/dev/null | tr -d : | tail -c 5)
+    mac=$(cat /sys/class/net/wlan0/address 2>/dev/null | tr -d : | tail -c 5 | tr a-z A-Z)
     psk=$(tr -dc 'A-HJ-NP-Za-km-z2-9' </dev/urandom | head -c 12)
     umask 077
     mkdir -p /etc/mu300
-    printf 'SSID=MU300-%s\nPSK=%s\nBAND=5\nCHANNEL=auto\nCOUNTRY=CN\n' "${mac^^}" "$psk" > "$CONF"
+    printf 'SSID=MU300-%s\nPSK=%s\nBAND=5\nCHANNEL=auto\nCOUNTRY=CN\n' "${mac}" "$psk" > "$CONF"
     echo "generated $CONF"
 fi
 # read values literally (never source the file: the passphrase may contain shell metacharacters)

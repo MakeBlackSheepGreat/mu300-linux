@@ -1,0 +1,63 @@
+--- /home/black/nx302j/work72/mod-build/mali/platform/qogirn6pro/mali_kbase_config_qogirn6pro.c.orig-before-powerfix	2026-11-20 14:20:50.345249362 +0800
++++ /home/black/nx302j/work72/mod-build/mali/platform/qogirn6pro/mali_kbase_config_qogirn6pro.c	2026-11-20 15:31:12.863838377 +0800
+@@ -265,7 +265,6 @@
+ 
+ 	gpu_dvfs_ctx.gpu_reg_ptr = devm_regulator_get(dev, "gpu");
+ 	KBASE_DEBUG_ASSERT(gpu_dvfs_ctx.gpu_reg_ptr);
+-
+ 	gpu_dvfs_ctx.gpu_soft_rst = devm_reset_control_get(dev, "gpu_soft_rst");
+ 	KBASE_DEBUG_ASSERT(gpu_dvfs_ctx.gpu_soft_rst);
+ 
+@@ -809,13 +808,23 @@
+ 	down(gpu_dvfs_ctx.sem);
+ 	if (atomic_read(&gpu_dvfs_ctx.gpu_power_state) == 0) {
+ 		//gpu regulator enable
+-		if (!regulator_is_enabled(gpu_dvfs_ctx.gpu_reg_ptr)) {
+-			ret = regulator_enable(gpu_dvfs_ctx.gpu_reg_ptr);
+-			if (ret)
+-				printk(KERN_ERR "%s failed to enable vddgpu, error:%d\n", __func__, ret);
+-			udelay(10);
+-			atomic_inc(&gpu_dvfs_ctx.dcdc_gpu_state);
+-		}
++		/*
++		 * Enable unconditionally instead of only when regulator_is_enabled()
++		 * says otherwise. This board describes DCDC_GPU in its PMIC node but
++		 * marks it status="disabled" and gives gpu@23140000 no gpu-supply,
++		 * so devm_regulator_get(dev, "gpu") returns the always-on dummy
++		 * regulator: regulator_is_enabled() then always reports 1, dcdc_gpu_state
++		 * is never incremented, and mali_power_on() writes top_force_shutdown
++		 * while the GPU power domain is still off - hanging the AXI bus and the
++		 * CPU with it. regulator_enable() is a no-op that returns 0 for the
++		 * dummy, so this keeps the accounting right either way, and power-off
++		 * still pairs through its own regulator_is_enabled() check.
++		 */
++		ret = regulator_enable(gpu_dvfs_ctx.gpu_reg_ptr);
++		if (ret)
++			printk(KERN_ERR "%s failed to enable vddgpu, error:%d\n", __func__, ret);
++		udelay(10);
++		atomic_inc(&gpu_dvfs_ctx.dcdc_gpu_state);
+ 	}
+ 	atomic_inc(&gpu_dvfs_ctx.dcdc_gpu_poweron_in_progress);
+ 
+@@ -883,13 +892,14 @@
+ 	if (atomic_read(&gpu_dvfs_ctx.gpu_power_state) == 0 &&
+ 		atomic_read(&gpu_dvfs_ctx.dcdc_gpu_poweron_in_progress) == 0) {
+ 		//gpu regulator disable
+-		if (regulator_is_enabled(gpu_dvfs_ctx.gpu_reg_ptr)) {
+-			ret = regulator_disable(gpu_dvfs_ctx.gpu_reg_ptr);
+-			if (ret)
+-				printk(KERN_ERR "%s failed to disable vddgpu, error:%d\n", __func__, ret);
+-			udelay(10);
+-			atomic_dec(&gpu_dvfs_ctx.dcdc_gpu_state);
+-		}
++		/* Paired with the unconditional enable in mali_poweron_first_part(): the
++		 * dummy regulator would otherwise keep dcdc_gpu_state above zero forever,
++		 * because its regulator_disable() is a no-op but its is_enabled() stays 1. */
++		ret = regulator_disable(gpu_dvfs_ctx.gpu_reg_ptr);
++		if (ret)
++			printk(KERN_ERR "%s failed to disable vddgpu, error:%d\n", __func__, ret);
++		udelay(10);
++		atomic_dec(&gpu_dvfs_ctx.dcdc_gpu_state);
+ 	}
+ 	up(gpu_dvfs_ctx.sem);
+ }

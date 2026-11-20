@@ -1,0 +1,70 @@
+#!/bin/sh
+# Bring up the WCN Bluetooth host. Leaves an hci0 device behind; a userspace stack
+# (BlueZ) is what turns that into usable Bluetooth, and this rootfs has none yet.
+#
+# Ordering is the whole difficulty:
+#
+#  - wcn_bsp creates the sprd-mtty platform_device from marlin_subsys_init(), which
+#    only runs inside marlin_power_wq - scheduled 500 ms after probe, long before the
+#    chip has finished downloading firmware. Inserting sprdbt_tty earlier succeeds
+#    (insmod returns 0) but its probe never fires, so /dev/ttyBT0 never appears.
+#  - mtty_open() then powers the BT subsystem through start_marlin(), which takes
+#    marlin_dev->power_lock - the same lock the WCN firmware download holds.
+#  - The rfkill unblock callback goes through start_marlin() as well, so it contends
+#    for that lock too, and can silently fail while the download is running.
+#
+# Waiting for wlan0 is the cheapest reliable signal that all of the above is done.
+#
+# Two details in here were expensive to learn and must not be "cleaned up":
+#
+#  - there is no rfkill(8) binary in this rootfs, so the block is cleared through
+#    sysfs and re-read until it actually sticks;
+#  - h4-attach must keep the tty open for the lifetime of the attachment. Closing it
+#    calls mtty_close(), which frees the WCN bus channels while sdiohal_tx_thread is
+#    still walking them, and that null-derefs in sdiohal_tx_list_denq and panics.
+L=/var/log/mu300-bt.log
+mkdir -p "${L%/*}"
+: > "$L"
+say() { echo "$*" >> "$L"; sync; }
+say "start $(date)"
+
+i=0
+while [ $i -lt 150 ]; do
+    [ -e /sys/class/net/wlan0 ] && break
+    sleep 3; i=$((i + 3))
+done
+say "wlan0=$([ -e /sys/class/net/wlan0 ] && echo yes || echo no) after ${i}s"
+
+M=/lib/modules/$(uname -r)
+grep -q "^sprdbt_tty " /proc/modules || insmod "$M/sprdbt_tty.ko" 2>>"$L"
+sleep 2
+say "tty=[$(ls /dev/ttyBT* 2>/dev/null)]"
+
+i=0
+while [ $i -lt 20 ]; do
+    for r in /sys/class/rfkill/*; do
+        [ -d "$r" ] || continue
+        [ "$(cat "$r/name" 2>/dev/null)" = bluetooth ] || continue
+        echo 0 > "$r/soft" 2>/dev/null
+    done
+    b=$(for r in /sys/class/rfkill/*; do
+            [ -d "$r" ] || continue
+            [ "$(cat "$r/name" 2>/dev/null)" = bluetooth ] || continue
+            cat "$r/soft" 2>/dev/null
+        done | head -n1)
+    [ "$b" = 0 ] && break
+    sleep 5; i=$((i + 1))
+done
+say "bluetooth-soft=$b after ${i} retries"
+
+i=0
+while [ $i -lt 20 ]; do
+    out=$(/opt/mu300/bin/h4-attach /dev/ttyBT0 2>&1); rc=$?
+    [ $rc -eq 0 ] && { say "attach rc=0 out=[$out]"; break; }
+    say "attach retry$i rc=$rc out=[$out]"
+    sleep 5; i=$((i + 1))
+done
+
+sleep 5
+say "btclass=[$(ls /sys/class/bluetooth/ 2>/dev/null | tr '\n' ' ')]"
+say "done"

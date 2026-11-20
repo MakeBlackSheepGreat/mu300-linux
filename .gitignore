@@ -57,3 +57,12 @@ aoci.txt
 aoci.meta.txt
 aoci.code.txt
 AGENTS.md.backup.*
+
+# Mid-investigation backups of scripts patched on the device. The final state is
+# what matters; keeping the pre-patch copies in the tree only invites confusion
+# about which file actually runs.
+*orig-bash
+*orig-noself
+*orig-with-mali
+*orig-before-gpu
+*orig-before-stay

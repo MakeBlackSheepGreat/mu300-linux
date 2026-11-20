@@ -1,0 +1,22 @@
+#!/bin/sh
+# First boot: turn the services this board needs into rc.d symlinks, and keep wpad
+# from competing for the one radio.
+#
+# mu300-hw and mu300-hotspot ship in the overlay, but nothing created their S12/S21
+# links, so a freshly installed rootfs booted with no hardware bring-up and no AP.
+# wpad is present but this rootfs has no wifi-scripts, so it manages nothing useful -
+# it only races mu300-hotspot for wlan0, which showed up as three hostapd PIDs
+# fighting over the same interface.
+#
+# Every call is best-effort: "wpad stop" fails with "Command failed: Not found" when
+# no wpad instance is running (the normal case here, because it is already disabled),
+# and that must not make the script - and therefore the whole first boot - look
+# broken. Running through the init scripts rather than writing symlinks directly
+# keeps procd's own bookkeeping consistent with /etc/rc.d.
+/etc/init.d/mu300-hw enable 2>/dev/null || true
+/etc/init.d/mu300-hotspot enable 2>/dev/null || true
+/etc/init.d/mu300-selfcheck enable 2>/dev/null || true
+/etc/init.d/wpad disable 2>/dev/null || true
+/etc/init.d/wpad stop 2>/dev/null || true
+
+exit 0

@@ -1,4 +1,7 @@
 #!/bin/sh /etc/rc.common
+# Stop the trial watchdog first: extra-modules below may block on hardware that
+# is not fully described by this board's DT.
+touch /run/stay 2>/dev/null
 # Hardware bring-up before netifd: vendor drivers, zram, Wi-Fi (SC2355), first-boot Wi-Fi config, Bluetooth off
 START=12
 export PATH="$PATH:/opt/mu300/busybox-bin"
@@ -33,7 +36,7 @@ hw_bringup() {
 	# Optional modules need not hold up the AP. Preserve their internal ordering
 	# and run NFC only after both drivers and the final Wi-Fi config exist.
 	(
-		/opt/mu300/bin/extra-modules >/tmp/mu300-extra-modules.log 2>&1
+		/opt/mu300/bin/extra-modules >/root/extra-modules.log 2>&1
 		[ ! -x /opt/mu300/bin/bootmark ] || /opt/mu300/bin/bootmark wifi-extra-modules-done
 		/opt/mu300/bin/zram-start >/dev/null 2>&1
 		/opt/mu300/bin/mu300-nfc supported 2>/dev/null && /opt/mu300/bin/mu300-nfc sync >/tmp/mu300-nfc.log 2>&1

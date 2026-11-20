@@ -130,7 +130,7 @@ ls "$IN/out/modules"/*.ko >/dev/null 2>&1 || {
 }
 # The optional ones decide whether the image can use the modem, Wi-Fi, the GPU or the VPN at all. Missing ones
 # used to be skipped silently, which produces an image that boots and then does nothing useful.
-for o in firmware android-subset android-gpu-subset tools/logdw/logdw tools/bt-init/mu300-bt-init tools/keys/mu300-keys tools/atd-io/mu300-atd-io tools/gpu/cltest busybox upstream/out/modules; do
+for o in firmware android-subset android-gpu-subset tools/logdw/logdw tools/bt-init/mu300-bt-init tools/bt-init/h4-attach tools/keys/mu300-keys tools/atd-io/mu300-atd-io tools/gpu/cltest busybox upstream/out/modules; do
     [ -e "$IN/$o" ] && echo "  + $o" || echo "  - $o   (missing: the image is built without it)"
 done
 SML_CHECK=$(python3 "$TOP/tools/sml-voltage/build.py")
@@ -151,7 +151,7 @@ docker run --rm --platform linux/arm64 \
   -v "$TOP/boot/module-order.txt":/in/module-order.txt:ro -v "$IN/out/modules":/in/modules:ro \
   $(opt out/modules.builtin modules.builtin) $(opt out/modules.builtin.modinfo modules.builtin.modinfo) \
   $(opt firmware firmware) $(opt android-subset android-subset) $(opt android-gpu-subset android-gpu-subset) \
-  $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/keys/mu300-keys keys) $(opt tools/atd-io/mu300-atd-io atd-io) $(opt tools/gpu/cltest cltest) \
+  $(opt tools/logdw/logdw logdw) $(opt tools/bt-init/mu300-bt-init bt-init) $(opt tools/bt-init/h4-attach h4-attach) $(opt tools/keys/mu300-keys keys) $(opt tools/atd-io/mu300-atd-io atd-io) $(opt tools/gpu/cltest cltest) \
   $(opt busybox busybox) $(mainline_opt modules mainline-modules) $(plugin_opt) -v "$ROOTFS_DIR":/out -v "$REGDB":/in/regdb:ro \
   $(mainline_opt modules.builtin mainline-modules.builtin) $(mainline_opt modules.builtin.modinfo mainline-modules.builtin.modinfo) \
   -v "$THEME_APK":/in/luci-theme-aurora.apk:ro \
@@ -323,6 +323,7 @@ fi
 [ -e /in/cltest ] && { mkdir -p $R/opt/mu300/android/system/bin; cp /in/cltest $R/opt/mu300/android/system/bin/cltest; chmod 755 $R/opt/mu300/android/system/bin/cltest; }
 [ -e /in/logdw ] && { cp /in/logdw $R/opt/mu300/bin/logdw; chmod 755 $R/opt/mu300/bin/logdw; }
 [ -e /in/bt-init ] && { cp /in/bt-init $R/opt/mu300/bin/mu300-bt-init; chmod 755 $R/opt/mu300/bin/mu300-bt-init; }
+[ -e /in/h4-attach ] && { cp /in/h4-attach $R/opt/mu300/bin/h4-attach; chmod 755 $R/opt/mu300/bin/h4-attach; }
 [ -e /in/keys ] && { cp /in/keys $R/opt/mu300/bin/mu300-keys; chmod 755 $R/opt/mu300/bin/mu300-keys; }
 [ -e /in/atd-io ] && { cp /in/atd-io $R/opt/mu300/bin/mu300-atd-io; chmod 755 $R/opt/mu300/bin/mu300-atd-io; }
 # full static busybox for the tools OpenWrt busybox leaves out (od, timeout, mountpoint, losetup, rfkill, telnetd)
