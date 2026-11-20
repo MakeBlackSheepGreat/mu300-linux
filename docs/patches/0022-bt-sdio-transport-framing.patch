@@ -202,3 +202,50 @@ clean power-on, TX accepted (push_ret 0, no CMD53 error), and still not one RX c
 channel from 16 to 21. The remaining difference has to be inside wcn_bsp's SDIO handling of the
 BT channels, or a BT-specific enable step the vendor wcn_bsp.ko performs and our source tree
 does not have.
+================================================================================
+FOURTH ROUND (2026-11-21 05:25): what the firmware side does with channel 3
+================================================================================
+
+Pulled the vendor wcn_bsp.ko as well (/vendor_dlkm/lib/modules/wcn_bsp.ko, 1365238 B,
+sha256 5cd978b5...). Three things it settles:
+
+8. mtty_write's bus operations are the same calls ours makes.
+
+      2374: ldr x20, [x0, #48]   ; list_alloc
+      23c8: ldr x8,  [x0, #64]   ; push_list   (not push_list_direct, which is 72)
+      25e4: ldr x22, [x0, #56]   ; list_free, error path only
+
+   sprdwcn_bus_ops order: preinit 0, deinit 8, chn_init 16, chn_deinit 24, get_hwintf_type 32,
+   get_bus_status 40, list_alloc 48, list_free 56, push_list 64, push_list_direct 72.
+
+9. marlin_set_power(MARLIN_BLUETOOTH, 1) does nothing to the chip when Wi-Fi is already up.
+
+   Branch 3 of wcn_boot.c fires because power_state & AUTO_RUN_MASK is non-zero, and it only
+   calls set_wifipa_status(), set_bit(MARLIN_BLUETOOTH, power_state) and the notify. No
+   download, no register write, no power domain. So BT is expected to be a part of the btwifi
+   firmware that Wi-Fi's download already brought up, and start_marlin() for BT is bookkeeping.
+   That is why "bluetooth_set_power: end_block: 0, ret: 0" looks like success while nothing
+   happens on the card.
+
+   Related: the BTRAM power helper returns early for this chip, which is correct - the DT
+   compatible is "unisoc,marlin3lite_sdio" and that maps to .unisoc_wcn_m3lite.
+
+   Firmware on both sides is identical: wcnmodem.bin 3145728, gnssmodem.bin 595970,
+   bt_configure_pskey.ini 5442, bt_configure_rf.ini 3115. Android also carries _aa / .xpe
+   variants of the two .ini files; those change PSKey contents, not whether the card answers.
+
+10. The one remaining lead is on the firmware side.
+
+   In the boot where bluetooth-start still did rfkill block first, the firmware asserted with
+
+       WCN BASE: fw assert:WCN Assert in pseudo_atc_main.c line 971, rd_len <= PSEUDO_ATC_BUFF_SIZE
+
+   pseudo_atc_main.c is firmware. The 184 bytes we wrote on channel 3 were taken by the
+   pseudo-ATC parser rather than the HCI one, which is consistent with no HCI event ever coming
+   back. Next: either channel 3 is not BT TX after all (re-interpret the vendor .data), or the
+   frame needs the pseudo-ATC header. Sending one AT command through /proc/mdbg/at_cmd and
+   getting a reply would prove the host-to-firmware control path independently, leaving the
+   channel number as the only variable.
+
+   Android's dmesg cannot help here: with BT working normally, "dmesg | grep -ic 'mtty.*rx'"
+   is 0, because the vendor log level hides the RX path.
