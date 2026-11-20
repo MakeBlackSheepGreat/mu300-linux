@@ -1,0 +1,95 @@
+sprdbt_tty on an SDIO WCN bus: four framing defects
+
+sprdbt_tty comes from the realme tree as tty-pcie and is written for the PCIe/EDMA
+transport. This board's WCN is on SDIO, and three of its assumptions do not hold. All three
+are inside the driver, so none of them touch Wi-Fi (which uses its own channel path).
+
+1. BT_RX_DMA_SIZE 2048 exceeds what the SDIO bus will carry.
+
+   sdiohal sizes the TX half of every push as SDIOHAL_ALIGN_4BYTE(mbuf->len + sizeof(struct
+   bus_puh_t)) and refuses anything above MAX_PAC_SIZE = SDIOHAL_BLK_SIZE * 2 = 840 * 2 =
+   1680. Pushing an RX buffer with len = 2048 asks for 2052:
+
+       WCN SDIO: pac size > cp buf size,len 2052
+       WCN SDIO: sdio adma write fail ret:-1
+
+   The first failure also sets the WCN carddump flag, and start_marlin() then refuses to
+   power the BT function for the rest of the boot:
+
+       WCN SDIO: carddump flag set[1]
+       bluetooth_set_power: end_block: 0, ret: -1
+       mtty_open : set power failed , return!
+
+   The RX allocation has to stay at the full 1680 because the RX side of the sg list is
+   built with MAX_PAC_SIZE regardless of the mbuf length, but only 1680 - 4 = 1676 bytes
+   may be described by the header.
+
+2. BT_SDIO_HEAD_LEN 0 lets the bus header overwrite the HCI command.
+
+   sdiohal_tx_fill_puh() writes the 4-byte bus_puh_t at mbuf->buf[0] while mtty_write()
+   memcpy'd the HCI data there too, so the first four bytes of every command (the H4 type
+   and the opcode) were replaced by type/subtype/len/eof. The controller therefore received
+   a packet that was not a valid HCI command. Reserve the four bytes on TX and strip them on
+   RX.
+
+3. mtty_rx_cb() used head->len, which is not the payload length on SDIO.
+
+   sdiohal_rx_list_parser() assigns mbuf->len = MAX_MBUF_SIZE before handing the buffer up
+   and never copies the length the chip wrote into the bus_puh_t, so head->len is 2048 for
+   every packet. Passing that to tty_insert_flip_string() fed hci_uart a whole zero-filled
+   buffer; it logged "Frame reassembly failed (-84)" on repeat and the tty reported ~20 MB
+   of RX with zero parsed events. The real length is the header's len field, bits 7..22.
+
+Verified on the NX302J after the three changes, with the controller powered and btattach
+attached: "pac size > cp buf" no longer appears, bluetooth_set_power returns 0, mtty_open
+succeeds, and hciconfig reports RX bytes:0 with no reassembly errors - the garbage flood is
+gone. The controller still does not answer HCI (TX 1 command, RX 0 events), which is a
+separate transport question and is recorded in the progress document.
+
+--- a/tty-pcie/tty.h
++++ b/tty-pcie/tty.h
+@@ -33,9 +33,12 @@
+ #define BT_TX_POOL_SIZE0   64  // the max buffer is 64
+ #define BT_TX_POOL_SIZE1   64
+ #define BT_RX_POOL_SIZE   1
+-#define BT_SDIO_HEAD_LEN   0
++/* the SDIO bus puts a bus_puh_t in front of the payload on both directions */
++#define BT_SDIO_HEAD_LEN   4
+ #define BT_RX_MAX_NUM 4
+-#define BT_RX_DMA_SIZE 2048
++/* the RX sg list is built with MAX_PAC_SIZE (840 * 2), so the allocation must reach it;
++ * only the part the header can describe is pushed */
++#define BT_RX_DMA_SIZE 1680
+
+ #endif
+
+--- a/tty-pcie/tty.c
++++ b/tty-pcie/tty.c
+@@ -171,7 +171,7 @@
+ 		mbuf->phy = (unsigned long)(temp.phy);
+         dm_rx_phy[i] = mbuf->phy;
+-		mbuf->len = temp.size;
+-		memset(mbuf->buf, 0x0, mbuf->len);
++		mbuf->len = temp.size - BT_SDIO_HEAD_LEN;
++		memset(mbuf->buf, 0x0, temp.size);
+ 		mbuf = mbuf->next;
+ 	}
+
+@@ -278,7 +278,10 @@
+-    len_send = head->len;
++    /* head->len is MAX_MBUF_SIZE whatever the chip wrote; the real length is the len field
++     * of the bus_puh_t the bus left at buf[0] (bits 7..22). */
++    len_send = (*(unsigned int *)head->buf >> 7) & 0xffff;
+
+@@ -486,7 +489,8 @@
+-        tx_head->buf = (unsigned char *)dma_alloc_coherent(dm, count, (dma_addr_t *)(&(tx_head->phy)), GFP_DMA);
++        /* keep room for the bus_puh_t the SDIO bus writes at buf[0] */
++        tx_head->buf = (unsigned char *)dma_alloc_coherent(dm, count + BT_SDIO_HEAD_LEN, (dma_addr_t *)(&(tx_head->phy)), GFP_DMA);
+
+@@ -494,7 +498,7 @@
+-        memcpy(tx_head->buf, buf, count);
++        memcpy(tx_head->buf + BT_SDIO_HEAD_LEN, buf, count);
+
+@@ -503,7 +507,7 @@
+-            dma_free_coherent(dm, count, (void *)tx_head->buf, tx_head->phy);
++            dma_free_coherent(dm, count + BT_SDIO_HEAD_LEN, (void *)tx_head->buf, tx_head->phy);

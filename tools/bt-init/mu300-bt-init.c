@@ -116,6 +116,20 @@ static int read_full(int fd, uint8_t *b, int n, int timeout_ms)
 }
 
 /* send one command and wait for its Command Complete; returns the status byte or -1 */
+/*
+ * A failure here must not exit: mtty_close() frees RX mbufs that are still queued on the WCN
+ * bus, and sdiohal_tx_list_denq then walks that freed list and panics
+ * (sdiohal_tx_list_denq+0x70 [wcn_bsp], Oops 0000000096000005). Holding the descriptor keeps
+ * the kernel alive on a boot whose only fault is a vendor command the controller did not
+ * answer, which is also what makes the failure observable at all.
+ */
+static int hold_open(const char *dev)
+{
+	fprintf(stderr, "holding %s open so mtty_close cannot free queued RX mbufs\n", dev);
+	for (;;)
+		sleep(3600);
+	return 1;
+}
 static int hci_cmd(int fd, uint16_t op, const uint8_t *param, int len)
 {
 	uint8_t pkt[260] = { 0x01, op & 0xff, op >> 8, len };
@@ -188,12 +202,21 @@ int main(int argc, char **argv)
 	tcflush(fd, TCIOFLUSH);
 
 	n = serialize(pskey_fields, pv, buf);
-	if ((st = hci_cmd(fd, 0xfca0, buf, n)) != 0) { fprintf(stderr, "PSKey upload failed (%d)\n", st); return 1; }
+	if ((st = hci_cmd(fd, 0xfca0, buf, n)) != 0) {
+		fprintf(stderr, "PSKey upload failed (%d)\n", st);
+		return hold_open(dev);
+	}
 	n = serialize(rf_fields, rv, buf);
-	if ((st = hci_cmd(fd, 0xfca2, buf, n)) != 0) { fprintf(stderr, "RF parameters failed (%d)\n", st); return 1; }
+	if ((st = hci_cmd(fd, 0xfca2, buf, n)) != 0) {
+		fprintf(stderr, "RF parameters failed (%d)\n", st);
+		return hold_open(dev);
+	}
 	/* the enable reply carries mode (2 bytes) before the status, so report it only */
 	st = hci_cmd(fd, 0xfca1, (const uint8_t[]){ 0x00, 0x00, 0x01 }, 3);
-	if (st < 0) { fprintf(stderr, "enable failed\n"); return 1; }
+	if (st < 0) {
+		fprintf(stderr, "enable failed\n");
+		return hold_open(dev);
+	}
 	for (int i = 0; i < nextra; i++) {
 		uint8_t pb[255];
 		int pl = 0;
