@@ -1,0 +1,107 @@
+#!/bin/sh
+# mu300-dial - bring up the modem data link (W3: dial + internet).
+#
+# The modem comes up under /opt/mu300/bin/mu300-at, which talks to /dev/stty_nr1. Two things
+# had to be right before a data call could ever succeed, and the first one was silently wrong:
+#
+#   1. AT+CFUN must be 1. The stock path leaves it at 0 (minimum functionality = radio off), and
+#      with CFUN=0 AT+CGREG? reports "2,0" - the modem has seen no cell at all, so registration
+#      and PDP activation can never happen no matter what the APN says. With CFUN=1 it reports
+#      "2,8,"0000","0097140A",11" - a real cell id.
+#   2. SIP is only meaningful once AT+CPIN? answers "+CPIN: READY". Without a card it answers
+#      "+CME ERROR: 10" (not a timeout), which is how this script distinguishes "modem alive, no
+#      SIM" from "AT path broken".
+#
+# Usage: mu300-dial [apn]        default apn: cmnet
+# Exit:  0 up / 2 no SIM / 3 no registration / 4 PDP failed / 5 AT path broken / 64 usage
+set -u
+
+AT=/opt/mu300/bin/mu300-at
+APN=${1:-${APN:-cmnet}}
+PDP=1
+WAIT_REG_TRIES=${WAIT_REG_TRIES:-30}
+WAIT_REG_SLEEP=${WAIT_REG_SLEEP:-4}
+
+log() { echo "mu300-dial: $*" >&2; }
+
+# mu300-at prints a one-line warning to stdout before the modem answer; drop it.
+at() {
+    $AT "$1" 2>/dev/null | grep -v '^mu300-at' | tr -d '\r'
+}
+
+at_ok() {
+    echo "$1" | grep -qx 'OK'
+}
+
+# --- 1. AT path -------------------------------------------------------------------------------
+# A working AT path always answers something, even with no SIM. Total silence means the spipe
+# channel is gone, which is a different problem from a missing card.
+r=$(at 'AT')
+case "$r" in
+    *OK*) ;;
+    *) log "AT path broken: 'AT' returned '$(echo "$r" | tr '\n' ' ')'"; exit 5 ;;
+esac
+
+# --- 2. radio on ------------------------------------------------------------------------------
+r=$(at 'AT+CFUN?')
+log "CFUN before: $(echo "$r" | grep CFUN || echo unknown)"
+case "$r" in
+    *'+CFUN: 1'*) ;;
+    *)
+        r=$(at 'AT+CFUN=1')
+        at_ok "$r" || { log "AT+CFUN=1 failed: $(echo "$r" | tr '\n' ' ')"; exit 5; }
+        sleep 3
+        log "CFUN after: $(at 'AT+CFUN?' | grep CFUN)"
+        ;;
+esac
+
+# --- 3. SIM -----------------------------------------------------------------------------------
+r=$(at 'AT+CPIN?')
+case "$r" in
+    *'+CPIN: READY'*) log "SIM ready" ;;
+    *'CME ERROR: 10'*)
+        log "no SIM in the slot (AT+CPIN? -> +CME ERROR: 10). The AT path and the radio are both"
+        log "alive; only the card is missing, so registration and PDP cannot proceed."
+        exit 2 ;;
+    *) log "unexpected AT+CPIN? answer: $(echo "$r" | tr '\n' ' ')"; exit 2 ;;
+esac
+
+# --- 4. registration --------------------------------------------------------------------------
+i=0
+reg=''
+while [ "$i" -lt "$WAIT_REG_TRIES" ]; do
+    reg=$(at 'AT+CGREG?')
+    # <stat> 1 = registered, home; 5 = registered, roaming
+    case "$reg" in
+        *',1'*|*',1,'*) break ;;
+        *',5'*|*',5,'*) break ;;
+    esac
+    i=$((i + 1))
+    sleep "$WAIT_REG_SLEEP"
+done
+log "CGREG: $(echo "$reg" | grep CGREG || echo none)"
+case "$reg" in
+    *',1'*|*',1,'*|*',5'*|*',5,'*) ;;
+    *) log "not registered after $((WAIT_REG_TRIES * WAIT_REG_SLEEP))s"; exit 3 ;;
+esac
+
+# --- 5. PDP context --------------------------------------------------------------------------
+r=$(at "AT+CGDCONT=$PDP,\"IP\",\"$APN\"")
+at_ok "$r" || { log "AT+CGDCONT failed: $(echo "$r" | tr '\n' ' ')"; exit 4; }
+
+r=$(at "AT+CGACT=1,$PDP")
+at_ok "$r" || { log "AT+CGACT failed: $(echo "$r" | tr '\n' ' ')"; exit 4; }
+log "CGACT: $(at 'AT+CGACT?' | grep CGACT)"
+
+# --- 6. data interface ------------------------------------------------------------------------
+i=0
+while [ "$i" -lt 15 ]; do
+    [ -e /sys/class/net/sipa_eth0 ] && /sbin/ip link set sipa_eth0 up 2>/dev/null
+    case "$(cat /sys/class/net/sipa_eth0/operstate 2>/dev/null)" in
+        up) log "sipa_eth0 is up (APN $APN)"; exit 0 ;;
+    esac
+    i=$((i + 1))
+    sleep 2
+done
+log "sipa_eth0 did not come up after PDP activation"
+exit 4
