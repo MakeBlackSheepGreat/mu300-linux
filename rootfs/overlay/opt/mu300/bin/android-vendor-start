@@ -46,13 +46,38 @@ for u in /sys/class/block/${internal_disk}*/uevent; do
     [ -n "$n" ] && ln -sfn /dev/$d /dev/block/by-name/$n
 done
 sh /opt/mu300/bin/ueventd-perms.sh
+# Android's ueventd publishes each partition twice: with its own _a/_b suffix and
+# again without it, resolved through the current slot. Vendor binaries rely on the
+# unsuffixed form - cp_diskserver asks for /dev/block/by-name/nr_fixnv1 and, on a
+# board whose GPT only has nr_fixnv1_a/_b, every read fails and the CP never gets
+# its NV data ("wait modem alive timeout"). Point the unsuffixed name at this slot's
+# partition; a name that already exists without a suffix is left alone.
+# The suffix comes from the command line the chroot is given, not from
+# /run/mu300/android-slot: the point of that file is which Android slot is
+# installed, while this is the slot whose modem images the vendor tools were told
+# to read, and the two are deliberately swapped for a trial boot.
+slot=$(grep -o 'androidboot.slot_suffix=_[ab]' /run/mu300-cmdline.android 2>/dev/null | head -n1)
+slot=${slot##*_}
+[ -n "$slot" ] || slot=a
+for l in /dev/block/by-name/*_"$slot"; do
+    [ -e "$l" ] || continue
+    base=${l%"_$slot"}
+    [ -e "$base" ] || ln -sfn "$(readlink -f "$l")" "$base"
+done
 mark vendor-perms
 for m in dev proc sys; do mkdir -p $A/$m; done
 mkdir -p $A/data/vendor $A/mnt $A/tmp
-mountpoint -q $A/dev || mount --rbind /dev $A/dev
+# A procd respawn re-runs this after a failed attempt, and a plain
+# "mountpoint -q || mount" stack leaks one mount layer per attempt: the chroot
+# was found with 226 layers after a few minutes of respawning. Detach the whole
+# set first so every start begins from a known state, then mount once.
+for m in $A/dev/pts $A/dev/__properties__ $A/dev $A/proc/cmdline $A/proc $A/sys; do
+    mountpoint -q "$m" && umount "$m" 2>/dev/null
+done
+mount --rbind /dev $A/dev
 [ -s $A/dev/__properties__/property_info ] || mount --bind $A/dev-properties $A/dev/__properties__
-mountpoint -q $A/proc || mount -t proc proc $A/proc
-mountpoint -q $A/sys || mount -t sysfs sysfs $A/sys
+mount -t proc proc $A/proc
+mount -t sysfs sysfs $A/sys
 # the vendor daemons read androidboot.* (slot, modem config) from the command line; the mainline kernel forces its
 # own command line, so fall back to the bootargs LK put in the device tree
 src=/proc/cmdline

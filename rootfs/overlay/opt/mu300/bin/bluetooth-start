@@ -1,20 +1,18 @@
 #!/bin/sh
 # Bring up the SC2355 (Marlin3) Bluetooth controller for BlueZ.
-# sprdbt_tty exposes the controller as an H4 tty (/dev/ttyBT0) over the shared WCN PCIe link;
-# mu300-bt-init uploads the vendor PSKey/RF blocks (bt_configure_*.ini from Android's /vendor/etc)
-# and exec'd btattach keeps the hci_uart line discipline attached for as long as the service runs.
+# sprdbt_tty exposes the controller as an H4 tty (/dev/ttyBT0); mu300-bt-init uploads the vendor
+# PSKey/RF blocks and then hands the open fd to btattach, which keeps the hci_uart line
+# discipline attached for as long as the service runs.
 set -e
 CONF=/etc/mu300/bluetooth.conf
 STATE=/var/lib/mu300/bdaddr
-FW=/usr/lib/firmware
+FW=/lib/firmware
 
-# the WCN platform driver is loaded by mu300-wifi; modprobe is a no-op if it is already there
 grep -q "^wcn_bsp " /proc/modules || modprobe wcn_bsp
 grep -q "^sprdbt_tty " /proc/modules || modprobe sprdbt_tty
 for n in $(seq 1 10); do [ -c /dev/ttyBT0 ] && break; sleep 1; done
 [ -c /dev/ttyBT0 ] || { echo "no /dev/ttyBT0" >&2; exit 1; }
 
-# BDADDR= in bluetooth.conf wins; otherwise a stable locally administered address derived from machine-id
 BDADDR=$(sed -n 's/^BDADDR=\([0-9A-Fa-f:]\{17\}\)$/\1/p' "$CONF" 2>/dev/null | tail -n1)
 if [ -z "$BDADDR" ]; then
     if [ ! -s "$STATE" ]; then
@@ -27,10 +25,28 @@ if [ -z "$BDADDR" ]; then
     BDADDR=$(cat "$STATE")
 fi
 
-# power-cycle the BT function of the combo chip so the controller starts from its ROM defaults
-rfkill block bluetooth || true
+# Power-cycle the BT function so the controller starts from its ROM defaults.
+# Drive the rfkill attribute instead of rfkill(8): the attribute is the interface, the tool is
+# only a client, and this image may not carry the applet.
+bt_rfkill() {
+    for d in /sys/class/rfkill/rfkill*; do
+        [ -e "$d/name" ] || continue
+        [ "$(cat "$d/name")" = bluetooth ] || continue
+        printf '%s' "$1" > "$d/soft"
+        return 0
+    done
+    echo "no bluetooth rfkill node" >&2
+    return 1
+}
+bt_rfkill 1
 sleep 1
-rfkill unblock bluetooth
+bt_rfkill 0
 sleep 2
-/opt/mu300/bin/mu300-bt-init -d /dev/ttyBT0 -p "$FW/bt_configure_pskey.ini" -r "$FW/bt_configure_rf.ini" -a "$BDADDR"
-exec btattach -B /dev/ttyBT0 -P h4
+
+# -e hands the still-open tty fd to btattach. Closing it here frees RX mbufs that are still
+# queued on the WCN bus, and sdiohal_tx_list_denq then walks that freed list and panics
+# (sdiohal_tx_list_denq+0x70 [wcn_bsp], 0000000096000005). The fd has no O_CLOEXEC, so it
+# stays open exactly as long as btattach runs - the same reason h4-attach never closes.
+exec /opt/mu300/bin/mu300-bt-init -d /dev/ttyBT0 \
+    -p "$FW/bt_configure_pskey.ini" -r "$FW/bt_configure_rf.ini" -a "$BDADDR" \
+    -e 'exec /usr/bin/btattach -B /dev/ttyBT0 -P h4'

@@ -330,7 +330,7 @@ fi
 if [ -e /in/busybox ]; then
     cp /in/busybox $R/opt/mu300/bin/busybox; chmod 755 $R/opt/mu300/bin/busybox
     mkdir -p $R/opt/mu300/busybox-bin
-    for a in od timeout losetup telnetd getty; do
+    for a in od timeout losetup telnetd getty rfkill; do
         chroot $R /bin/sh -c "command -v $a" >/dev/null 2>&1 && continue
         ln -sf ../bin/busybox $R/opt/mu300/busybox-bin/$a
     done

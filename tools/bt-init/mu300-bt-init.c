@@ -122,7 +122,13 @@ static int hci_cmd(int fd, uint16_t op, const uint8_t *param, int len)
 	memcpy(pkt + 4, param, len);
 	hexdump("<", pkt, len + 4);
 	if (write(fd, pkt, len + 4) != len + 4) { perror("write"); return -1; }
-	for (int tries = 0; tries < 8; tries++) {
+	/*
+	 * The WCN bus hands up the RX mbuf with its 4-byte bus_puh_t header in front of the
+	 * HCI data (observed on the SDIO link: 00 ee 02 02, whose len field reads back as the
+	 * whole 1500-byte buffer), so the first bytes of a read are not always the packet type
+	 * we are looking for. Skip up to 64 of them instead of 8 before giving up.
+	 */
+	for (int tries = 0; tries < 64; tries++) {
 		uint8_t h[3], ev[256];
 		if (read_full(fd, h, 1, 3000) < 0) break;
 		if (h[0] != 0x04) { hexdump("? skip", h, 1); continue; }
@@ -139,13 +145,14 @@ int main(int argc, char **argv)
 {
 	const char *dev = "/dev/ttyBT0", *pskey = "/usr/lib/firmware/bt_configure_pskey.ini";
 	const char *rf = "/usr/lib/firmware/bt_configure_rf.ini", *addr = NULL;
+	const char *exec_prog = NULL;
 	char *extra[16];
 	int nextra = 0;
 	static uint32_t pv[64][16], rv[32][16];
 	uint8_t buf[256];
 	int c, n, st;
 
-	while ((c = getopt(argc, argv, "d:p:r:a:vx:")) != -1) {
+	while ((c = getopt(argc, argv, "d:p:r:a:vx:e:")) != -1) {
 		switch (c) {
 		case 'd': dev = optarg; break;
 		case 'p': pskey = optarg; break;
@@ -153,8 +160,9 @@ int main(int argc, char **argv)
 		case 'a': addr = optarg; break;
 		case 'v': verbose = 1; break;
 		case 'x': if (nextra < 16) extra[nextra++] = optarg; break;
+		case 'e': exec_prog = optarg; break;
 		default:
-			fprintf(stderr, "usage: %s [-d tty] [-p pskey.ini] [-r rf.ini] [-a bdaddr] [-v]\n", argv[0]);
+			fprintf(stderr, "usage: %s [-d tty] [-p pskey.ini] [-r rf.ini] [-a bdaddr] [-v] [-x OPDATA] [-e prog ...]\n", argv[0]);
 			return 2;
 		}
 	}
@@ -199,6 +207,19 @@ int main(int argc, char **argv)
 	}
 	printf("Marlin3 Bluetooth initialised on %s (pskey %d bytes, rf %d bytes)\n", dev,
 	       serialize(pskey_fields, pv, buf), serialize(rf_fields, rv, buf));
+
+	/*
+	 * Do not close the tty: mtty_close() frees the RX mbufs that are still queued on
+	 * the WCN bus, and sdiohal_tx_list_denq then walks that list and panics
+	 * (sdiohal_tx_list_denq+0x70 -> Oops). The fd carries no O_CLOEXEC, so handing it
+	 * to the program that owns the tty for the rest of the session keeps it open for
+	 * exactly as long as that program runs. Same reason h4-attach never closes.
+	 */
+	if (exec_prog) {
+		execl("/bin/sh", "sh", "-c", exec_prog, (char *)NULL);
+		perror("execl");
+		return 1;
+	}
 	close(fd);
 	return 0;
 }

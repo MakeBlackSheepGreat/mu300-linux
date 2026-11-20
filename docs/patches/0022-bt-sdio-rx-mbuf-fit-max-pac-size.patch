@@ -1,0 +1,37 @@
+sprdbt_tty on an SDIO WCN bus: the RX mbuf must fit MAX_PAC_SIZE
+
+BT_RX_DMA_SIZE is the size of every RX mbuf that sprdbt_tty allocates and pushes to the
+WCN bus. The realme source sets it to 2048, which is correct for the PCIe link it was
+written for. On this board the WCN is attached over SDIO, where sdiohal derives the DMA
+size from the mbuf length plus the 4-byte public header and refuses anything above
+MAX_PAC_SIZE = SDIOHAL_BLK_SIZE * 2 = 840 * 2 = 1680:
+
+    WCN SDIO: pac size > cp buf size,len 2052
+    WCN SDIO: sdio adma write fail ret:-1
+    Bluetooth: hci0: Frame reassembly failed (-84)
+
+2052 = 2048 + 4, so every push of an RX buffer failed. The first failure also sets the
+WCN carddump flag, and start_marlin() then refuses to power the BT function for the rest
+of the boot:
+
+    WCN SDIO: carddump flag set[1]
+    bluetooth_set_power: end_block: 0, ret: -1
+    mtty_open : set power failed , return!
+
+1500 keeps the header inside the limit (1504 <= 1680) and is larger than any HCI ACL
+packet the controller sends in one bus transaction.
+
+Verified on the NX302J after this change: "pac size > cp buf" no longer appears in dmesg,
+bluetooth_set_power returns 0, and mtty_open succeeds.
+
+--- a/tty-pcie/tty.h
++++ b/tty-pcie/tty.h
+@@ -34,7 +34,9 @@
+ #define BT_RX_POOL_SIZE   1
+ #define BT_SDIO_HEAD_LEN   0
+ #define BT_RX_MAX_NUM 4
+-#define BT_RX_DMA_SIZE 2048
++/* 2048 + 4 exceeds MAX_PAC_SIZE (840 * 2) on the SDIO bus; see this file's header. */
++#define BT_RX_DMA_SIZE 1500
+ 
+ #endif
