@@ -93,3 +93,59 @@ separate transport question and is recorded in the progress document.
 @@ -503,7 +507,7 @@
 -            dma_free_coherent(dm, count, (void *)tx_head->buf, tx_head->phy);
 +            dma_free_coherent(dm, count + BT_SDIO_HEAD_LEN, (void *)tx_head->buf, tx_head->phy);
+================================================================================
+SECOND ROUND (2026-11-21 03:40): channel numbers, and who owns the RX buffers
+================================================================================
+
+Both were read out of the vendor module this board actually ships
+(/vendor_dlkm/lib/modules/sprdbt_tty.ko, 73998 B, sha256 f586fef4...) and confirmed on the
+device.
+
+4. BT_RX_CHANNEL 2 and BT_TX_CHANNEL0 1 are PCIe-style numbers, not this board's channels.
+
+   mchn_ops_t is 144 bytes with hif_type@0, channel@4, inout@0x4c, pool_size@0x58 (pahole on
+   our own .ko). The vendor's .data then reads:
+
+       bt_rx_ops  @0x108: hif_type 0 (SDIO), channel 17, inout 0 (RX), pool_size 1
+       bt_tx_ops0 @0x198: hif_type 0 (SDIO), channel  3, inout 1 (TX), pool_size 64
+
+   The SDIO bus numbers RX channels from SDIO_CHN_TX_NUM (12) upwards, so 17 is bus subtype
+   5. With 2, sdiohal_get_rx_channel_list() computes list_rx[2 - 12] = list_rx[-10] - an
+   out-of-bounds index - and the buffers handed to the card carry subtype 6 instead of 5, so
+   every read returned our own zeroed buffer. Channel 14 is not usable either: WCN_ASSERT_RX
+   owns it (WCN_AT_TX=0, WCN_LOOPCHECK_RX=12, WCN_AT_RX=13, WCN_ASSERT_RX=14, WCN_RING_RX=15)
+   and bus_chn_init() refuses a channel that already has ops:
+
+       WCN BUS: [+]bus_chn_init(14, 1)
+       WCN BUS: bus_chn_init err, hif_type 1
+
+   With 17/3 both registrations succeed:
+
+       WCN BUS: [+]bus_chn_init(17, 1)
+       WCN BUS: [-]bus_chn_init(17)
+       WCN BUS: [+]bus_chn_init(3, 1)
+       WCN BUS: [-]bus_chn_init(3)
+
+5. The module must not allocate its own RX buffers on SDIO.
+
+   sdiohal_init() allocates SDIOHAL_RX_NODE_NUM page-backed nodes into p_data->list_rx_buf
+   and hands them up through pop_link; sdiohal_rx_list_free() returns each one with
+   put_page(virt_to_head_page(buf)). Pushing dma_alloc_coherent() buffers - what
+   mtty_dma_buf_alloc() did - runs that put_page on memory that never came from alloc_pages():
+
+       pc : sdiohal_rx_list_free+0x74/0x160 [wcn_bsp]
+       <  sdiohal_list_push+0x244/0x298 [wcn_bsp]
+       <  mtty_dma_buf_alloc+0x138/0x198 [sprdbt_tty]
+       <  mtty_open+0xbc/0x120 [sprdbt_tty]
+       Internal error: Oops: 0000000096000006
+
+   The vendor agrees: mtty_open's only calls are sitm_ini, start_marlin and prints; mtty_close's
+   are stop_marlin, kfifo_free, kfree. Neither touches a buffer pool. Dropping both calls
+   removes the crash; the RX buffers stay the bus's.
+
+Still open: the controller does not answer. btattach attaches and hci0 appears, the 0xFCA0
+PSKey command goes out with the right framing on channel 3, and RX arrives on channel 17, but
+no HCI event comes back, so bt-init parks holding the tty (it must not close: mtty_close frees
+RX mbufs still queued on the bus and sdiohal_tx_list_denq then walks that freed list and
+panics). Wi-Fi on the same card is unaffected throughout (wlan0 is an 80 MHz AP on channel 36),
+so the SDIO bus itself is healthy.
