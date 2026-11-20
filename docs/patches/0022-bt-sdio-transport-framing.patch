@@ -345,3 +345,36 @@ SIXTH ROUND (2026-11-21 05:55): the channels must survive a close
     bt_configure_pskey variant and writes bluetooth_reset to reset the BT core), so they do not
     affect a raw tty write - but they show the two trees diverge, which means "the source does
     not contain it" cannot be used to rule a difference out.
+================================================================================
+SEVENTH ROUND (2026-11-21 06:10): the channel number cannot be the problem
+================================================================================
+
+18. A channel sweep closes the whole "wrong channel" hypothesis space.
+
+    A module parameter mu300_diag (off by default) makes mtty_open put its TX channel in a
+    variable and then, once powered, walk every channel the BT block could plausibly use:
+
+        RX: chn_init on 16..25          -> 16, 18, 19, 20, 21, 25 accepted
+                                           (17 ours, 22/23/24 Wi-Fi)
+        TX: chn_init on 1..11, then one HCI Reset per accepted channel
+                                        -> 1, 2, 4, 5, 6, 7, 9, 11 accepted
+                                           (3 ours, 8/10 Wi-Fi)
+        8 x "hci_reset_write=4", 6 channels listening, "MU300-BT rx_cb" count 0.
+
+    Eight different bus subtypes sent HCI Reset with receivers registered on six channels and
+    not one reply came back. The controller's BT function is not consuming HCI data at all;
+    which number the channel carries is irrelevant.
+
+19. Firmware and clock type are also ruled out.
+
+        wcnmodem.bin   844dc10209cf39e9ff5ff0638839c8922d74798fb58c3a9ff2151bf532c87060
+        gnssmodem.bin  85e1a6d1ec79e40029f44743663bd9277e462cfc9313fd9fbf1d9c09160491fd
+
+    identical to Android's /odm/firmware copies. And although our /proc/cmdline has no
+    "marlin.clktype=" (Android carries marlin.clktype=0), wcn_boot.c only uses it to pick TCXO
+    vs TSX for the 26 MHz crystal, and Wi-Fi runs on that same crystal - so the effective clock
+    type is right.
+
+    What is left is a BT enable that the Android HAL performs and we have not reproduced: the
+    vendor module's chipid / dumpmem / bluetooth_reset sysfs group plus its wcn_reset_notifier
+    registration, none of which exist in the realme source we build from.
