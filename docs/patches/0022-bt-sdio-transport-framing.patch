@@ -300,3 +300,48 @@ Next has to be runtime comparison, not more source reading: read sdiohal's count
 while BT is working to see which subtype the card actually completes on, and check whether the
 CP cmdline on the Android side carries a BT switch (inform_cp_bt_download shows the CP is part
 of the BT flow, and our modem cmdline is bound from /run/mu300-cmdline.android).
+================================================================================
+SIXTH ROUND (2026-11-21 05:55): the channels must survive a close
+================================================================================
+
+15. mtty_close must not deinit the channels.
+
+    The vendor's mtty_close calls stop_marlin(), sitm_cleanup() and kfree() only - the channels
+    are registered once in mtty_probe() and live until the module is removed. Ours also did
+
+        sprdwcn_bus_chn_deinit(&bt_rx_ops);
+        sprdwcn_bus_chn_deinit(&bt_tx_ops0);
+
+    which is quietly destructive: bt-init parks holding the tty when its upload fails, so the
+    first killall removes channels 17/3 for the rest of the boot, and since registration moved
+    to probe no later open brings them back. mtty_write then cannot get an mbuf and logs
+    nothing at all.
+
+    Measured before: after a killall, writing to /dev/ttyBT0 produced no MU300-BT line at all
+    (grep count stayed at the one write from before the kill). After: two raw writes both
+    arrive - "MU300-BT write chn=3 count=8 push_ret=0" twice.
+
+16. Raw writes prove the card answers nothing.
+
+    Bypassing mu300-bt-init, writing the two commands seen in Android's own dmesg dump:
+
+        (printf "\001\131\375\000"; sleep 1; printf "\001\003\014\000"; sleep 2) > /dev/ttyBT0
+
+    01 59 FD 00 is the vendor command (opcode 0xFD59, no parameters) that Android sends, and
+    01 03 0C 00 is HCI Reset. Both reached mtty_write on channel 3 with push_ret 0, and the card
+    answered neither - no rx_cb, no "skip type", no CMD53 error, no assert.
+
+17. Our tty.c is not the same revision as the vendor's.
+
+    The vendor module exposes a bluetooth sysfs group the realme source we build does not have:
+
+        bluetooth_attrs @0x250, dev_attr_chipid @0x268, dev_attr_dumpmem @0x288,
+        bluetooth_reset_block @0x2a8
+        "%s: chipid: %d, chipid_str: %s", "bluetooth_reset", "%s: reset callback coming",
+        wcn_reset_notifier_list
+
+    and its mtty_probe calls sysfs_create_group plus a wcn reset callback registration that
+    ours does not. Those attributes serve the Android HAL (it reads chipid to choose a
+    bt_configure_pskey variant and writes bluetooth_reset to reset the BT core), so they do not
+    affect a raw tty write - but they show the two trees diverge, which means "the source does
+    not contain it" cannot be used to rule a difference out.
