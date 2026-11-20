@@ -149,3 +149,56 @@ no HCI event comes back, so bt-init parks holding the tty (it must not close: mt
 RX mbufs still queued on the bus and sdiohal_tx_list_denq then walks that freed list and
 panics). Wi-Fi on the same card is unaffected throughout (wlan0 is an 80 MHz AP on channel 36),
 so the SDIO bus itself is healthy.
+================================================================================
+THIRD ROUND (2026-11-21 05:00): registration timing, and why the block/unblock cycle hurts
+================================================================================
+
+6. The BT channels must be registered before any subsystem powers the chip.
+
+   dmesg showed sprdbt_tty being insmodded from the initramfs at 2.8 s and failing on unknown
+   symbols (wcn_bsp not loaded yet), then the modem block in extra-modules trying it after
+   sipa_eth - again without wcn_bsp. sprd_wlan_combo therefore loaded on its own and drove
+   start_marlin(MARLIN_WIFI), and the firmware's channel table was negotiated without BT.
+   The vendor module registers at probe, not at open, for the same reason.
+
+   Fix in the rootfs, not the driver: wifi-start loads the three modules in dependency order.
+
+       - for m in wcn_bsp sprd_wlan_combo; do
+       + for m in wcn_bsp sprdbt_tty sprd_wlan_combo; do
+
+   Measured after a cold boot:
+
+       [20.697] WCN SDIO: sdiohal_probe func num is 1!!!   <- wcn_bsp
+       [22.373] MU300-BT chn_init rx=17 ret=0              <- sprdbt_tty
+       [22.373] MU300-BT chn_init tx=3 ret=0
+       [22.488] WCN SDIO: sdiohal_probe func num is 1!!!   <- sprd_wlan_combo powers the chip
+
+   and the channel registration moved from mtty_open() into mtty_probe() in the driver.
+
+7. Never rfkill-block the BT function before opening the tty.
+
+   bluetooth-start did "bt_rfkill 1; sleep 1; bt_rfkill 0". The block runs
+   stop_marlin(MARLIN_BLUETOOTH), which leaves the card half-initialised; the following
+   start_marlin() then short-circuits on first_power_on_ready, so the BT function never comes
+   up. The next HCI write times out at the SDIO layer and the firmware asserts:
+
+       MU300-BT write chn=3 count=184 push_ret=0
+       WCN SDIO: sdiohal_config_packer_chain:CMD53 write failed with code -110
+       WCN SDIO: sdio adma write fail ret:-1
+       WCN BASE: fw assert:WCN Assert in pseudo_atc_main.c line 971, rd_len <= PSEUDO_ATC_BUFF_SIZE
+
+   Unblocking once is what works - rfkill_bluetooth_init() already leaves the node soft-blocked,
+   so a single "echo 0 > soft" is the whole power-on:
+
+       bluetooth_set_power: end_block: 0, ret: 0
+       mtty_open power on state ret = 0!
+       mtty_open device success!
+
+   With the cycle removed there is no CMD53 timeout and no assert. bluetooth-start still needs
+   that line changed.
+
+Still open after all of the above: same framing, right channels, right registration order,
+clean power-on, TX accepted (push_ret 0, no CMD53 error), and still not one RX callback on any
+channel from 16 to 21. The remaining difference has to be inside wcn_bsp's SDIO handling of the
+BT channels, or a BT-specific enable step the vendor wcn_bsp.ko performs and our source tree
+does not have.
