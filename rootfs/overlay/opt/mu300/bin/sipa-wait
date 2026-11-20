@@ -1,0 +1,24 @@
+#!/bin/sh
+# sipa_eth0 is the modem data interface. The CP creates it seconds after the modem loader
+# starts, which is later than init finishes, and nothing else brings it up - so W2's
+# "sipa up" only ever held when someone ran "ip link set" by hand. procd supervises this
+# waiter instead of a background subshell in rc.local, because a subshell forked by
+# rc.local is reaped when boot completes.
+#
+# Usage: sipa-wait [max_tries] [interval_seconds]
+tries=${1:-300}
+interval=${2:-2}
+i=0
+while [ "$i" -lt "$tries" ]; do
+    if [ -e /sys/class/net/sipa_eth0 ]; then
+        /sbin/ip link set sipa_eth0 up 2>/dev/null
+        if [ "$(cat /sys/class/net/sipa_eth0/operstate 2>/dev/null)" = "up" ]; then
+            logger -t mu300-sipa "sipa_eth0 is up after ${i} polls"
+            exit 0
+        fi
+    fi
+    i=$((i + 1))
+    sleep "$interval"
+done
+logger -t mu300-sipa "gave up waiting for sipa_eth0 (${tries} polls)"
+exit 1

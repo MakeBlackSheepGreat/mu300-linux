@@ -1,6 +1,10 @@
 #!/bin/sh
-# /etc/rc.local is the last thing /etc/init.d/done (S95done) runs at boot, and that hook is
-# guarded by "[ -f /etc/rc.local ]". The overlay shipped no rc.local, so nothing placed here
-# ever ran even though the rc.d link was always present.
+# /etc/rc.local - runs last in OpenWrt's boot. The link is S95done -> /etc/init.d/done, whose
+# hook is "[ -f /etc/rc.local ] && sh /etc/rc.local"; the overlay used to ship no rc.local at
+# all, which is why rc.local was believed never to run even though the rc.d link was present.
+#
+# One marker line per boot. This is X1's acceptance criterion.
 echo "rc-local-ran $(date +%s) kernel=$(uname -r)" >> /root/rcmark
 sync
+
+exit 0
