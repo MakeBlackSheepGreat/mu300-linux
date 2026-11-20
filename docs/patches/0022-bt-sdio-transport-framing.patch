@@ -378,3 +378,55 @@ SEVENTH ROUND (2026-11-21 06:10): the channel number cannot be the problem
     What is left is a BT enable that the Android HAL performs and we have not reproduced: the
     vendor module's chipid / dumpmem / bluetooth_reset sysfs group plus its wcn_reset_notifier
     registration, none of which exist in the realme source we build from.
+================================================================================
+EIGHTH ROUND (2026-11-21 06:55): Android's own first-init sequence, and it matches ours
+================================================================================
+
+20. bluesleep is not the missing step.
+
+    lpm.c exposes /proc/bluetooth/sleep/btwrite; writing '1' runs host_wakeup_bt(), which calls
+    marlin_set_sleep(MARLIN_BLUETOOTH, false) and marlin_set_wakeup(MARLIN_BLUETOOTH). Measured
+    write with the tty free (btattach killed first):
+
+        echo 1 > /proc/bluetooth/sleep/btwrite     -> bluesleep_write_proc_btwrite=49
+        (printf '\x01\x03\x0c\x00'; sleep 3) > /dev/ttyBT0
+        MU300-BT write count 2, MU300-BT rx_cb count 0
+
+    and both functions are stubs anyway, in our tree and in the vendor's:
+
+        int marlin_set_wakeup(enum wcn_sub_sys subsys) { int ret = 0; return 0; ... }
+        00000000000124e0 <marlin_set_wakeup>: mov w0, wzr; ret
+        00000000000124e8 <marlin_set_sleep>:  mov w0, wzr; ret
+
+    So the BT core needs no software wake on this platform, and wcn_bsp matches the vendor's
+    binary here too.
+
+21. Android's first BT init is structurally identical to mu300-bt-init.
+
+    Captured from a fresh Android boot with dmesg cleared:
+
+        chipid_show: chipid: 2, chipid_str: Marlin3Lite_AB_0x2355B001
+        mtty_open device success!
+        start_marlin [MARLIN_BLUETOOTH]
+        mtty_open power on state ret = 0!
+        mtty_write dump size: 184   01 A0 FC B0 00 1F 00 00 BF FF 8D FE DB 3D 7B 87
+        mtty_write dump size: 264   01 A2 FC FC 00 E0 00 E0 00 ...
+        mtty_write dump size: 8     01 A1 FC 03 00 00 01 00
+        (then HCI)
+
+    Same order (FCA0 -> FCA2 -> FCA1), same FCA0 parameter count (176), and the first twelve
+    PSKey bytes are byte-identical to what we send:
+
+        01 a0 fc b0 00 1f 00 00 bf ff 8d fe db 3d 7b 87 ...
+
+    FCA1 carries 00 00 01 in both. So "wrong init sequence", "wrong PSKey contents" and "BT
+    needs another enable command" are all closed.
+
+22. Actionable: this board's chip is the AB revision, so the _aa PSKey/RF variants apply.
+
+        chipid_str: Marlin3Lite_AB_0x2355B001
+
+    Android ships bt_configure_pskey_aa.ini and bt_configure_rf_aa.ini next to the base files,
+    and the RF one is 3116 bytes against the base 3115; Android sends 252 FCA2 parameters. We
+    only deployed the base pair, so that is the one untested difference left. wcnmodem.bin and
+    gnssmodem.bin hash-match Android exactly.
