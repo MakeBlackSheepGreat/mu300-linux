@@ -249,3 +249,54 @@ sha256 5cd978b5...). Three things it settles:
 
    Android's dmesg cannot help here: with BT working normally, "dmesg | grep -ic 'mtty.*rx'"
    is 0, because the vendor log level hides the RX path.
+================================================================================
+FIFTH ROUND (2026-11-21 05:45): the host side is exhausted; the card sends nothing
+================================================================================
+
+11. The channel numbers are no longer an inference. The vendor sprdbt_tty.ko carries a symbol
+    table:
+
+        0000000000000108  0000000000000090  D  bt_rx_ops
+        0000000000000198  0000000000000090  D  bt_tx_ops
+        00000000000002c0  0000000000000004  d  que_task
+        00000000000002c4  0000000000000004  d  que_sche
+
+    mchn_ops_t is 144 bytes with channel at +4, so bt_rx_ops.channel = *(0x10c) = 17 and
+    bt_tx_ops.channel = *(0x19c) = 3. (The {1,1} at .data+0x2c0 is que_task/que_sche, not a
+    channel.) The driver names also differ from the realme source: the vendor has one
+    bt_tx_ops, not bt_tx_ops0/bt_tx_ops1.
+
+12. pseudo_atc has nothing to do with BT. It is the firmware module behind the mdbg AT path on
+    channel 0 - ap_int_cp_wifi_bin_done() calls inform_cp_bt_download() only for the CP
+    handshake, and wcn_sysfs_store_sleep_state() sends "at+debug=1" via wcn_send_atcmd(). The
+    "WCN Assert in pseudo_atc_main.c line 971" seen earlier belongs to that path, so the
+    previous round's "our HCI command was parsed as pseudo-ATC" guess is wrong.
+
+13. Everything on the host side works, measured:
+
+        echo 1 > /sys/devices/virtual/misc/wcn/devices/sleep_state
+        WCN BASE: mdbg_tx_cb, chn:0
+        WCN BASE: : at cmd read:OK                  <- firmware answered
+        WCN BASE: loopcheck(51) 2026-11-21_...      <- loopcheck channel running
+        WCN BASE: mdbg_ring_write totallen:147184   <- firmware log streaming
+        WCN MEM_PD: inform_cp_bt_download
+        WCN MEM_PD: bt_open int from cp             <- CP acknowledged in 7 ms
+
+    and wcn_bsp's chn/channel symbol set is identical to the vendor's - same source tree.
+
+14. The card is not sending anything, and we are not dropping it.
+
+        dmesg | grep -cE "skip type"                          -> 0
+        dmesg | grep -cE "rx error channel|no rx mbuf node"    -> 0
+        dmesg | grep -cE "MU300-BT rx_cb"                      -> 0
+
+    sdiohal_rx_list_parser() logs both acceptance and rejection (the reject path prints
+    "skip type[%d]sub[%d]len[%d]"), so zero on all three means no RX parse ever ran.
+
+    wcnmodem.bin cannot be mined for clues either: it is compressed/encrypted, so
+    "grep -aoiE 'at\\+[a-z0-9_]{2,16}'" and an HCI/bt symbol search both return nothing.
+
+Next has to be runtime comparison, not more source reading: read sdiohal's counters in Android
+while BT is working to see which subtype the card actually completes on, and check whether the
+CP cmdline on the Android side carries a BT switch (inform_cp_bt_download shows the CP is part
+of the BT flow, and our modem cmdline is bound from /run/mu300-cmdline.android).
