@@ -1,0 +1,121 @@
+#!/bin/sh
+# mu300-w3-check - W3 acceptance in one command. Prints one PASS/FAIL/PENDING line per
+# criterion and a final verdict, so "did the cellular WAN come up" stops being a judgement call.
+#
+# It is written to be useful in both states: without a card it must name the missing piece
+# (the SIM) instead of failing vaguely, and with a card it must walk the whole chain to an
+# address and a ping.
+#
+# Usage: mu300-w3-check [ping_target]      default target: 223.5.5.5
+# Exit:  0 all pass / 1 something failed / 2 waiting on hardware (no SIM, not registered)
+set -u
+
+AT=/opt/mu300/bin/mu300-at
+TARGET=${1:-223.5.5.5}
+fails=0
+pending=''
+
+ok()   { printf '  PASS  %s\n' "$1"; }
+bad()  { printf '  FAIL  %s\n' "$1"; fails=$((fails + 1)); }
+wait_() { printf '  PEND  %s\n' "$1"; [ -z "$pending" ] && pending="$2"; }
+
+at() { $AT "$1" 2>/dev/null | grep -v '^mu300-at' | tr -d '\r'; }
+
+echo "mu300-w3-check: $(date)"
+
+# 1. AT path. A live path answers even with no card; silence means the SIPC channel is gone.
+r=$(at 'AT')
+case "$r" in
+    *OK*) ok "AT path answers (AT -> OK)" ;;
+    *)    bad "AT path dead (AT -> '$(echo "$r" | tr '\n' ' ')')" ;;
+esac
+
+# 2. The daemon, not the direct-open fallback: two readers on one SIPC tty wedges it.
+if /etc/init.d/mu300-atd status 2>/dev/null | grep -q 'running'; then
+    ok "mu300-atd running (/run/mu300-at/urc present)"
+else
+    bad "mu300-atd not running; mobile-data has no URC log"
+fi
+
+# 3. Radio must be at full functionality, not CFUN=0. At CFUN=0 CGREG reports "2,0" - no cell
+#    at all - so nothing downstream can ever register, whatever the APN says.
+r=$(at 'AT+CFUN?')
+case "$r" in
+    *'+CFUN: 1'*) ok "CFUN=1 (radio at full functionality)" ;;
+    *)            bad "CFUN is not 1 ($(echo "$r" | grep CFUN || echo unknown)); radio is off" ;;
+esac
+
+# 4. SIM.
+r=$(at 'AT+CPIN?')
+case "$r" in
+    *'+CPIN: READY'*)
+        ok "SIM ready (AT+CPIN? -> +CPIN: READY)"
+        have_sim=1 ;;
+    *'CME ERROR: 10'*)
+        wait_ "no SIM in the slot (AT+CPIN? -> +CME ERROR: 10)" sim
+        have_sim=0 ;;
+    *)
+        wait_ "SIM state is $(echo "$r" | tr '\n' ' ')" sim
+        have_sim=0 ;;
+esac
+
+if [ "$have_sim" = 1 ]; then
+    # 5. Signal.
+    r=$(at 'AT+CSQ')
+    csq=$(echo "$r" | sed -n 's/.*+CSQ: *\([0-9]*\),.*/\1/p')
+    if [ -n "$csq" ] && [ "$csq" -lt 99 ]; then
+        ok "signal measured (+CSQ: $(echo "$r" | grep -o '[0-9]*,[0-9]*'))"
+    else
+        wait_ "signal not measurable yet (+CSQ: $(echo "$r" | grep -o '[0-9]*,[0-9]*'))" reg
+    fi
+
+    # 6. Registration: <stat> 1 = home, 5 = roaming.
+    r=$(at 'AT+CGREG?')
+    case "$r" in
+        *',1'*|*',5'*) ok "registered ($(echo "$r" | grep CGREG))" ;;
+        *)             wait_ "not registered ($(echo "$r" | grep CGREG || echo no answer))" reg ;;
+    esac
+
+    # 7. PDP context.
+    r=$(at 'AT+CGACT?')
+    case "$r" in
+        *',1'*) ok "PDP active ($(echo "$r" | grep CGACT))" ;;
+        *)      bad "no active PDP context ($(echo "$r" | grep CGACT || echo no answer)); run ifup wan" ;;
+    esac
+fi
+
+# 8. The data interface netifd owns.
+st=$(cat /sys/class/net/sipa_eth0/operstate 2>/dev/null)
+if [ "$st" = up ]; then
+    ok "sipa_eth0 is up"
+else
+    [ -n "$pending" ] || wait_ "sipa_eth0 is ${st:-absent}" wan
+fi
+
+# 9. netifd's view, which is what the rest of OpenWrt reads.
+if ubus call network.interface.wan status 2>/dev/null | grep -q '"up": true'; then
+    ok "ubus network.interface.wan up"
+else
+    [ -n "$pending" ] || wait_ "ubus network.interface.wan not up" wan
+fi
+
+# 10. Actual connectivity.
+if [ -n "$pending" ]; then
+    printf '  PEND  ping %s (needs the link first)\n' "$TARGET"
+elif ping -c 3 -W 3 "$TARGET" >/dev/null 2>&1; then
+    ok "ping $TARGET"
+else
+    bad "ping $TARGET failed although the interface is up"
+fi
+
+echo
+if [ "$fails" -gt 0 ]; then
+    echo "VERDICT: FAIL ($fails criterion/criteria failed)"
+    exit 1
+elif [ -n "$pending" ]; then
+    echo "VERDICT: WAITING ON $pending"
+    exit 2
+else
+    echo "VERDICT: PASS - cellular WAN is up and reachable"
+    exit 0
+fi
