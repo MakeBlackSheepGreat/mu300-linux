@@ -17,36 +17,54 @@ BDADDR=$(sed -n 's/^BDADDR=\([0-9A-Fa-f:]\{17\}\)$/\1/p' "$CONF" 2>/dev/null | t
 if [ -z "$BDADDR" ]; then
     if [ ! -s "$STATE" ]; then
         mkdir -p "${STATE%/*}"
-        h=$(printf 'mu300-bt-%s' "$(cat /etc/machine-id)" | sha256sum | cut -c1-12)
-        first=$(( (0x$(echo "$h" | cut -c1-2) | 0x02) & 0xfe ))
-        printf '%02x:%s:%s:%s:%s:%s\n' "$first" "$(echo "$h" | cut -c3-4)" "$(echo "$h" | cut -c5-6)" \
-            "$(echo "$h" | cut -c7-8)" "$(echo "$h" | cut -c9-10)" "$(echo "$h" | cut -c11-12)" > "$STATE"
+        # Generate a random address and persist it. Never derive it from /etc/machine-id:
+        # OpenWrt's minimal image has no /etc/machine-id at all ("cat: can't open
+        # '/etc/machine-id'"), so the old derivation produced an empty BDADDR and
+        # mu300-bt-init received "-a ''". Upstream transport.py's controller_address() says the
+        # same thing - "do not derive a shared value from an absent machine-id" - and generates
+        # os.urandom(6) with the first byte forced to a locally-administered unicast value.
+        # /proc/sys/kernel/random/uuid is used rather than od(1): this busybox has no od applet.
+        h=$(tr -d '-' < /proc/sys/kernel/random/uuid)
+        printf '%02x:%s:%s:%s:%s:%s\n' "$(( (0x$(echo "$h" | cut -c1-2) | 0x02) & 0xfe ))" \
+            "$(echo "$h" | cut -c3-4)" "$(echo "$h" | cut -c5-6)" "$(echo "$h" | cut -c7-8)" \
+            "$(echo "$h" | cut -c9-10)" "$(echo "$h" | cut -c11-12)" > "$STATE"
     fi
     BDADDR=$(cat "$STATE")
 fi
+[ -n "$BDADDR" ] || { echo "no BD address" >&2; exit 1; }
 
-# Power-cycle the BT function so the controller starts from its ROM defaults.
+# Unblock the BT function. Do NOT block it first to "power-cycle": the kernel's rfkill set_block
+# path calls stop_marlin(MARLIN_BLUETOOTH), so blocking before start_marlin leaves the WCN half
+# initialised. Measured on NX302J: the following PSKey write failed with
+#   WCN SDIO: sdiohal_config_packer_chain:CMD53 write failed with code -110
+#   fw assert:WCN Assert in pseudo_atc_main.c line 971, rd_len <= PSEUDO_ATC_BUFF_SIZE
+# The upstream MU300 transport (usr/lib/unisoc-bluetooth/transport.py, rfkill_unblock) only ever
+# writes soft=0, which is what this does now.
 # Drive the rfkill attribute instead of rfkill(8): the attribute is the interface, the tool is
 # only a client, and this image may not carry the applet.
-bt_rfkill() {
+bt_rfkill_unblock() {
     for d in /sys/class/rfkill/rfkill*; do
         [ -e "$d/name" ] || continue
         [ "$(cat "$d/name")" = bluetooth ] || continue
-        printf '%s' "$1" > "$d/soft"
+        [ "$(cat "$d/hard" 2>/dev/null || echo 0)" = 0 ] || {
+            echo "bluetooth hard blocked" >&2
+            return 1
+        }
+        printf '0' > "$d/soft"
         return 0
     done
     echo "no bluetooth rfkill node" >&2
     return 1
 }
-bt_rfkill 1
-sleep 1
-bt_rfkill 0
+bt_rfkill_unblock
 sleep 2
 
 # -e hands the still-open tty fd to btattach. Closing it here frees RX mbufs that are still
 # queued on the WCN bus, and sdiohal_tx_list_denq then walks that freed list and panics
 # (sdiohal_tx_list_denq+0x70 [wcn_bsp], 0000000096000005). The fd has no O_CLOEXEC, so it
 # stays open exactly as long as btattach runs - the same reason h4-attach never closes.
+# -S 3000000 matches the upstream MU300 transport (unisoc-bt-transport runs
+# "btattach -B /dev/ttyBT0 -P h4 -S 3000000"); use 3000000 unless BT_SPEED overrides it.
 exec /opt/mu300/bin/mu300-bt-init -d /dev/ttyBT0 \
     -p "$FW/bt_configure_pskey.ini" -r "$FW/bt_configure_rf.ini" -a "$BDADDR" \
-    -e 'exec /usr/bin/btattach -B /dev/ttyBT0 -P h4'
+    -e "exec /usr/bin/btattach -B /dev/ttyBT0 -P h4 -S ${BT_SPEED:-3000000}"
