@@ -3,7 +3,17 @@
 # Same-board preferences, APNs, SMS and traffic history remain user-owned.
 export PATH="$PATH:/opt/mu300/bin:/usr/sbin:/sbin"
 device=$(mu300-device 2>/dev/null)
-case $device in f50|v50|u30air) slots=2 ;; *) exit 1 ;; esac
+# NX302J is a phone, so it is not one of the dual-SIM MU300 variants above; only slot 0 has
+# been brought up here, and a model's slot capability must not be inferred from another board
+# with the same SoC (AGENTS.md §最高指导方法 原则 5). Listing it explicitly is what lets
+# mu300-atd's start_service() get past this guard at all: before this it exited 1 for any board
+# that was not f50/v50/u30air, so the AT daemon, mu300-smsd and mu300-sysd never started and
+# mobile-data had no URC log to read.
+case $device in
+    f50|v50|u30air) slots=2 ;;
+    nx302j) slots=1 ;;
+    *) exit 1 ;;
+esac
 [ "$(uci -q get unisoc_modem.main)" = core ] || exit 0
 # Firmware-owned default is shared by all models. The explicit selector is
 # user-owned, so upgrading the default must never rewrite auto_work_mode.

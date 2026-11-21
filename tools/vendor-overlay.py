@@ -82,11 +82,24 @@ def host_free_mode(arc, is_dir):
     #                       exit_code 127, and android-install.sh then also skips
     #                       the rc.d symlink because it requires them executable
     #   uci-defaults      - they run once at first boot
+    #   netifd/proto      - netifd protocol handlers; at 0666 it silently reports
+    #                       "proto": "none" and never calls back into the script
     # busybox-bin was added after a real failure: its mountpoint shim arrived as
     # 0666 and android-vendor-start aborted with "mountpoint: Permission denied",
     # so the Android chroot never mounted and the modem was never released.
-    if parts[-2:-1] in ('bin', 'busybox-bin') or 'init.d' in parts[:-1] \
-            or 'uci-defaults' in parts[:-1]:
+    # netifd/proto was added after the same class of failure: mu300cell.sh arrived
+    # as 0666, so `ubus call network.interface.wan status` answered
+    # {"available": false, "proto": "none"} and the cellular WAN was never set up
+    # even though /etc/config/network named proto 'mu300cell'.
+    #
+    # The parent directory has to be read with parts[-2], not parts[-2:-1]: the slice
+    # yields a one-element list, and "['bin'] in ('bin', 'busybox-bin')" is always
+    # False, so the bin/busybox-bin rule never fired and every helper in
+    # opt/mu300/bin arrived as 0644.
+    parent = parts[-2] if len(parts) >= 2 else ''
+    if parent in ('bin', 'busybox-bin') or 'init.d' in parts[:-1] \
+            or 'uci-defaults' in parts[:-1] \
+            or (parent == 'proto' and 'netifd' in parts[:-1]):
         return 0o755
     return 0o644
 
