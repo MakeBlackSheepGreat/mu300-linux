@@ -15,7 +15,6 @@
 # keeps procd's own bookkeeping consistent with /etc/rc.d.
 /etc/init.d/mu300-hw enable 2>/dev/null || true
 /etc/init.d/mu300-hotspot enable 2>/dev/null || true
-/etc/init.d/mu300-selfcheck enable 2>/dev/null || true
 /etc/init.d/wpad disable 2>/dev/null || true
 /etc/init.d/wpad stop 2>/dev/null || true
 

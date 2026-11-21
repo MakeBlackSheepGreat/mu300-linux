@@ -1,0 +1,63 @@
+{
+  "format": 1,
+  "id": "nx302j",
+  "status": "source-port-in-progress",
+  "platform": "mu300",
+  "label": "Nubia Xiaoniu NX302J",
+  "hostname": "mu300",
+  "android_models": ["NX302J"],
+  "software_base": {
+    "repository": "https://github.com/MakeBlackSheepGreat/mu300-linux.git",
+    "branch": "nx302j",
+    "note": "forked from kanoqwq/mu300-linux minikano-openwrt-feats like the U30 Air; this profile records where NX302J diverges"
+  },
+  "hardware_reference": {
+    "repository": "https://github.com/kanoqwq/u30pro_openwrt.git",
+    "note": "used for the shared platform transport, kernel-module build and installer layout only; NX302J board data comes from its own stock Android firmware"
+  },
+  "hardware": {
+    "soc": "ums9620",
+    "board": "ums9620_2h10",
+    "android_model": "NX302J",
+    "kernel": "7.2.8",
+    "wifi": "sprd_wlan_combo over SDIO (wlan0, sc2355 marlin3_lite)",
+    "charger": "zte-sqc",
+    "display": "td4160 1612x720",
+    "touch": "omnivision-tcm-spi",
+    "battery": true,
+    "screen": true
+  },
+  "boot": {
+    "images": ["boot", "vendor_boot", "init_boot"],
+    "slot_policy": "fixed-linux-on-boot_a-while-android-stays-b",
+    "root": "mu300-container-ext4",
+    "persistent_partition": "sda77",
+    "persistent_use": "complete-openwrt-root",
+    "preserve_android": true,
+    "partition_geometry": "per-device",
+    "hardware_trial_verified": true
+  },
+  "management": {
+    "dashboard": "luci-app-mu300",
+    "installer": "shared-submodule-mu300-layout-native-boot-adapter",
+    "at_broker": "mu300-atd",
+    "at_port": "/dev/stty_nr2",
+    "dial_owner": "netifd mu300cell",
+    "dial_port": "/dev/stty_nr0",
+    "sim_slots": 1,
+    "sim1_at_port": "/dev/stty_nr2",
+    "sim1_dial_port": "/dev/stty_nr0",
+    "hotspot": "mu300-hotspot, config in /etc/mu300/hotspot.conf (not /etc/config/wireless)",
+    "lan": "192.168.77.1/24 on br-lan (wlan0 + usb0)"
+  },
+  "board_notes": {
+    "wcn_bus": "SDIO, not PCIe. No tty-sdio/ tree exists upstream, so sprdbt_tty is built from tty-pcie/ with hif_type patched to HW_TYPE_SDIO; BT channels are tx=3 rx=17.",
+    "trial_trigger": "adb reboot is enough; verified 2026-11-21 COM9 appears at 9 s and stays up past 260 s. A manual power cycle is not required.",
+    "never": [
+      "do not mark the Linux slot successful: LK then stops decrementing tries and never falls back to Android",
+      "do not switch the active Android slot to _a: its super has no system",
+      "do not write misc[0:32] without first checking for bootonce-bootloader"
+    ]
+  },
+  "release_ready": false
+}

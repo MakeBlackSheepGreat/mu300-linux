@@ -148,6 +148,7 @@ docker run --rm --platform linux/arm64 \
   -v "$TOP/tools/ble-decoder":/in/ble-decoder-source:ro \
   -v "$BT_DECODER":/in/ble-decoder-artifacts:ro \
   -v "$TOP/openwrt/patches/wifi-scripts-no-dfs.patch":/in/wifi-scripts-no-dfs.patch:ro \
+  -v "$TOP/openwrt/patches/wifi-scripts-chanlist-band.patch":/in/wifi-scripts-chanlist-band.patch:ro \
   -v "$TOP/boot/module-order.txt":/in/module-order.txt:ro -v "$IN/out/modules":/in/modules:ro \
   $(opt out/modules.builtin modules.builtin) $(opt out/modules.builtin.modinfo modules.builtin.modinfo) \
   $(opt firmware firmware) $(opt android-subset android-subset) $(opt android-gpu-subset android-gpu-subset) \
@@ -275,6 +276,11 @@ python3 /in/stage-flow-offload.py --root $R
 apk_retry add patch >/dev/null
 patch --batch --fuzz=0 -d $R -p1 -i /in/wifi-scripts-no-dfs.patch
 grep -q "device_no_dfs(config);" $R/usr/share/ucode/wifi/hostapd.uc || { echo "wifi-scripts DFS patch not applied" >&2; exit 1; }
+# Two patches, applied in order: the band guard is a separate reviewed change with its own
+# source/result receipt (tools/stage-wifi-patches.py) and its own regression
+# (tests/test_wifi_patch_layout.py applies each one on its own). Folding them into one file
+# made both of those impossible, so they stay split as upstream has them.
+patch --batch --fuzz=0 -d $R -p1 -i /in/wifi-scripts-chanlist-band.patch
 grep -q "device_chanlist_band(config);" $R/usr/share/ucode/wifi/hostapd.uc || { echo "wifi-scripts channel-list band patch not applied" >&2; exit 1; }
 if [ -d /in/luci-plugin ]; then
     cp -a /in/luci-plugin/root/. $R/
@@ -337,7 +343,11 @@ if [ -e /in/busybox ]; then
 fi
 mkdir -p $R/etc/mu300
 python3 /in/stage-ntp.py --root $R --overlay /in/overlay
-python3 /in/stage-bluetooth.py --root $R --overlay /in/overlay --platform mu300-pcie --decoder-artifacts /in/ble-decoder-artifacts --decoder-sources /in/ble-decoder-source
+# The Bluetooth transport is a board property, not a platform one: the WCN combo chip is on PCIe on
+# MU300/U30 Air and on SDIO on NX302J, so sprdbt_tty is built from a different tree and the vendor
+# init that runs before btattach differs. MU300_BT_PLATFORM lets a board select it explicitly; the
+# default stays mu300-pcie so existing MU300/U30 Air images are unchanged.
+python3 /in/stage-bluetooth.py --root $R --overlay /in/overlay --platform "${MU300_BT_PLATFORM:-mu300-pcie}" --decoder-artifacts /in/ble-decoder-artifacts --decoder-sources /in/ble-decoder-source
 printf "%s\n" "${MU300_VERSION:-dev}" > $R/etc/mu300/image-version
 [ ! -f /in/release.json ] || cp /in/release.json $R/etc/mu300/release.json
 # Record image packages so upgrades can restore only user additions.
@@ -356,8 +366,15 @@ unset root_hash
 # enable the services (rc.common "enable" needs ubus, which is not running in the build container)
 # accounts still those of the image until an installer or mu300-update puts the device ones in place
 : > $R/etc/.mu300-accounts-from-image
-for s in mu300-accounts mu300-cpu-driver mu300-service-cpus mu300-vendor mu300-charge-mode mu300-hw mu300-post mu300-toolkit mu300-atd mu300-network-recovery mu300-modem-log mu300-wifi-client mu300-sysd mu300-ndp mu300-smsd mu300-user-packages unisoc-battery ttyd unisoc-battery-history; do
+# mu300-bt and mu300-sipa are in this list because neither was enabled anywhere before: mu300-hotspot
+# gets its rc.d link from etc/uci-defaults/99-mu300-enable-services, but these two had no link in the
+# image and no first-boot step either, so a freshly built rootfs came up without Bluetooth and without
+# the SIPA interface bring-up. They are enabled only when the file exists, so boards that do not ship
+# them are unaffected.
+for s in mu300-accounts mu300-cpu-driver mu300-service-cpus mu300-vendor mu300-charge-mode mu300-hw mu300-post mu300-toolkit mu300-atd mu300-network-recovery mu300-modem-log mu300-wifi-client mu300-sysd mu300-ndp mu300-smsd mu300-user-packages unisoc-battery ttyd unisoc-battery-history mu300-bt mu300-sipa; do
+    [ -f $R/etc/init.d/$s ] || continue
     n=$(sed -n "s/^START=//p" $R/etc/init.d/$s)
+    [ -n "$n" ] || continue
     ln -sf ../init.d/$s $R/etc/rc.d/S$n$s
 done
 ln -sf ../init.d/unisoc-battery $R/etc/rc.d/K08unisoc-battery
