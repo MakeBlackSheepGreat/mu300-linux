@@ -430,3 +430,48 @@ EIGHTH ROUND (2026-11-21 06:55): Android's own first-init sequence, and it match
     and the RF one is 3116 bytes against the base 3115; Android sends 252 FCA2 parameters. We
     only deployed the base pair, so that is the one untested difference left. wcnmodem.bin and
     gnssmodem.bin hash-match Android exactly.
+================================================================================
+NINTH ROUND (2026-11-21 11:10): hif_type must be SDIO, not PCIE
+================================================================================
+
+23. The BT channels were registering with the PCIe interface type.
+
+    tty.c comes from the realme PCIe tree and hardcodes ".hif_type = HW_TYPE_PCIE" in all three
+    mchn_ops_t (rx, tx0, tx1). On the running device that showed up plainly, because bus_chn_init
+    prints the value it stores:
+
+        [+]bus_chn_init(0, 0)     mdbg AT      SDIO
+        [+]bus_chn_init(12, 0)    loopcheck    SDIO
+        [+]bus_chn_init(13, 0)    AT RX        SDIO
+        [+]bus_chn_init(14, 0)    assert RX    SDIO
+        [+]bus_chn_init(15, 0)    ring RX      SDIO
+        [+]bus_chn_init(17, 1)    BT RX        PCIE   <-
+        [+]bus_chn_init(3, 1)     BT TX        PCIE   <-
+        [+]bus_chn_init(22, 0)    Wi-Fi        SDIO
+        [+]bus_chn_init(8, 0)     Wi-Fi TX     SDIO
+
+    Only BT carried type 1. The vendor's SDIO sprdbt_tty.ko has 0 in both ops structs:
+    .data at 0x108 reads 00 00 00 00 | 00 00 00 00 | 00 00 00 00 | 11 00 00 00, so
+    bt_rx_ops.hif_type = 0 and bt_rx_ops.channel = 0x11 = 17; .data at 0x198 reads
+    00 00 00 00 | 00 00 00 00 | 00 00 00 00 | 03 00 00 00, so bt_tx_ops.hif_type = 0 and
+    bt_tx_ops.channel = 3.
+
+    Fixed: all three now use HW_TYPE_SDIO. Verified on device after redeploy -
+
+        [+]bus_chn_init(17, 0)
+        [-]bus_chn_init(17)
+        [+]bus_chn_init(3, 0)
+
+    The card still answers nothing ("no Command Complete for 0xfca0", MU300-BT rx_cb count 0),
+    so this closes another divergence from the vendor binary without closing B2.
+
+24. The realme tree cannot build an SDIO variant of this driver.
+
+    sprdbt_tty/Kbuild accepts BSP_BOARD_UNISOC_WCN_SOCKET in {sipc, sdio, pcie, sipc2} and
+    selects TTY_DEVICE := tty-$(value), but the tree only contains tty-pcie/. There is no
+    tty-sdio/, so "sdio" would point at a directory that does not exist. Upstream has the same
+    situation: every commit that mentions the flag (5b31680, b826b19, 82fa33d, 445d8c9) and the
+    whole git history of the U30 Pro repository contain only BSP_BOARD_UNISOC_WCN_SOCKET=pcie.
+
+    That is why this board is the first SDIO Marlin3 BT case in either tree, and why its channel
+    numbers came only from the vendor binary.
