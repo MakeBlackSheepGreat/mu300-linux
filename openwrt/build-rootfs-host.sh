@@ -97,6 +97,10 @@ mkdir -p "$R/opt"
 cp -a "$TOP/rootfs/overlay/opt/mu300/." "$R/opt/mu300/"
 mkdir -p "$R/usr/share/ucode/mu300"
 cp -a "$TOP/rootfs/overlay/usr/share/ucode/mu300/." "$R/usr/share/ucode/mu300/"
+# rootfs/overlay/etc holds OpenWrt-only units that are not part of the Ubuntu variant, so this
+# whole subtree comes from the rootfs overlay, not from openwrt/overlay. mu300-sipa lives only
+# here: skipping it left the image without the SIPA bring-up service entirely.
+cp -a "$TOP/rootfs/overlay/etc/." "$R/etc/"
 cp -a "$TOP/openwrt/overlay/." "$R/"
 cp -a "$TOP/openwrt/luci-app-mu300/root/." "$R/"
 cp -a "$TOP/openwrt/luci-app-mu300/htdocs/." "$R/www/"
@@ -120,7 +124,10 @@ for s in mu300-accounts mu300-cpu-driver mu300-service-cpus mu300-vendor mu300-c
          mu300-smsd mu300-user-packages unisoc-battery ttyd mu300-hotspot mu300-sipa mu300-bt \
          unisoc-modem-ui unisoc-sms-forward unisoc-traffic dnsmasq bluetoothd; do
     [ -f "$R/etc/init.d/$s" ] || continue
-    n=$(sed -n "s/^START=//p" "$R/etc/init.d/$s" | head -1)
+    # Take only the leading number: some units end the START line with a trailing comment
+    # ("START=15   # before netifd: ..."), which used to become part of the link name and
+    # produced an unrunnable "S15   # before netifd...mu300-wifi-client".
+    n=$(sed -n 's/^START=\([0-9][0-9]*\).*/\1/p' "$R/etc/init.d/$s" | head -1)
     [ -n "$n" ] || continue
     ln -sf "../init.d/$s" "$R/etc/rc.d/S$n$s" 2>/dev/null
 done
