@@ -217,6 +217,7 @@ cp /in/sml-voltage-check $R/opt/mu300/bin/sml-voltage-check
 chmod 0755 $R/opt/mu300/bin/sml-voltage-check
 cp /in/modem-loader-patch $R/opt/mu300/bin/modem-loader-patch
 chmod 0755 $R/opt/mu300/bin/modem-loader-patch
+cp -a /in/rootfs-etc/. $R/etc/
 cp -a /in/overlay/. $R/
 python3 /in/stage-ra-renew.py --root $R --overlay /in/overlay
 # Do not retain the retired call helpers from an older base image.
@@ -373,18 +374,18 @@ unset root_hash
 # them are unaffected.
 for s in mu300-accounts mu300-cpu-driver mu300-service-cpus mu300-vendor mu300-charge-mode mu300-hw mu300-post mu300-toolkit mu300-atd mu300-network-recovery mu300-modem-log mu300-wifi-client mu300-sysd mu300-ndp mu300-smsd mu300-user-packages unisoc-battery ttyd unisoc-battery-history mu300-bt mu300-sipa; do
     [ -f $R/etc/init.d/$s ] || continue
-    n=$(sed -n "s/^START=//p" $R/etc/init.d/$s)
+    n=$(sed -n 's/^START=\([0-9][0-9]*\).*/\1/p' $R/etc/init.d/$s | head -1)
     [ -n "$n" ] || continue
     ln -sf ../init.d/$s $R/etc/rc.d/S$n$s
 done
 ln -sf ../init.d/unisoc-battery $R/etc/rc.d/K08unisoc-battery
 ln -sf ../init.d/unisoc-battery-history $R/etc/rc.d/K12unisoc-battery-history
 if [ -d /in/luci-plugin ]; then
-    n=$(sed -n "s/^START=//p" $R/etc/init.d/unisoc-modem-ui)
+    n=$(sed -n 's/^START=\([0-9][0-9]*\).*/\1/p' $R/etc/init.d/unisoc-modem-ui | head -1)
     ln -sf ../init.d/unisoc-modem-ui $R/etc/rc.d/S$n"unisoc-modem-ui"
-    n=$(sed -n "s/^START=//p" $R/etc/init.d/unisoc-sms-forward)
+    n=$(sed -n 's/^START=\([0-9][0-9]*\).*/\1/p' $R/etc/init.d/unisoc-sms-forward | head -1)
     ln -sf ../init.d/unisoc-sms-forward $R/etc/rc.d/S$n"unisoc-sms-forward"
-    n=$(sed -n "s/^START=//p" $R/etc/init.d/unisoc-traffic)
+    n=$(sed -n 's/^START=\([0-9][0-9]*\).*/\1/p' $R/etc/init.d/unisoc-traffic | head -1)
     ln -sf ../init.d/unisoc-traffic $R/etc/rc.d/S$n"unisoc-traffic"
     ln -sf ../init.d/unisoc-ttl $R/etc/rc.d/S97unisoc-ttl
     ln -sf ../init.d/unisoc-traffic $R/etc/rc.d/K01unisoc-traffic
